@@ -5,6 +5,9 @@ your team to use it without writing a login screen, an OAuth flow or a users
 table. Put the NetBird reverse proxy in front of it and let NetBird do the
 login. Your app only reads who is calling.
 
+How it works on the NetBird side, and the full list of changes, is in
+[docs/service-roles-and-mcp.md](../../docs/service-roles-and-mcp.md).
+
 This folder has working examples you can copy:
 
 | Folder | What it is |
