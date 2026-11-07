@@ -5,6 +5,7 @@ package proxy
 // before initMiddlewareManager builds the resolver. Add a new line
 // here when introducing another built-in middleware.
 import (
+	_ "github.com/netbirdio/netbird/proxy/internal/middleware/builtin/app_authz"
 	_ "github.com/netbirdio/netbird/proxy/internal/middleware/builtin/cost_meter"
 	_ "github.com/netbirdio/netbird/proxy/internal/middleware/builtin/llm_guardrail"
 	_ "github.com/netbirdio/netbird/proxy/internal/middleware/builtin/llm_identity_inject"
