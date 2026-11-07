@@ -1,0 +1,12 @@
+# Local dev signing keys minted by dev/mint_token.py. Never commit them.
+dev/keys/
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/

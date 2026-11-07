@@ -1,0 +1,96 @@
+# Example upstream apps for NetBird app authorization.
+#
+# SECURITY: the apps trust identity that the NetBird proxy sends. That is only
+# safe when the NetBird proxy is the ONLY way in. So:
+#   - the apps sit on "apps", an internal network with no published ports and
+#     no internet access;
+#   - in production, a NetBird routing peer (profile "peer") joins that network
+#     and the NetBird proxy reaches the apps through it. Nothing else should.
+#
+# Before the first start, create the dev signing key (used by tickets-mcp):
+#   python3 dev/mint_token.py pem
+#
+# Local development without NetBird (fake proxies on 127.0.0.1:9001-9003):
+#   docker compose --profile dev up --build
+# Production-style, reached only through NetBird:
+#   NB_SETUP_KEY=... docker compose --profile peer up -d --build
+
+services:
+  whoami:
+    build: ./whoami
+    environment:
+      NETBIRD_IDENTITY_MODE: headers
+    networks:
+      apps: {ipv4_address: 172.30.0.11}
+
+  tickets-mcp:
+    build: ./tickets-mcp
+    environment:
+      NETBIRD_IDENTITY_MODE: jwt
+      # The service domain in NetBird. Tokens for any other service are refused.
+      NETBIRD_AUDIENCE: ${TICKETS_DOMAIN:-tickets.localhost}
+      NETBIRD_PUBLIC_KEY_PEM: /run/netbird/public-key.pem
+    volumes:
+      # Production: point TICKETS_PUBLIC_KEY_FILE at the PEM from the NetBird
+      # dashboard (Roles & authorization, JWT public key).
+      - ${TICKETS_PUBLIC_KEY_FILE:-./dev/keys/public-key.pem}:/run/netbird/public-key.pem:ro
+    networks:
+      apps: {ipv4_address: 172.30.0.12}
+
+  notes-app:
+    build: ./notes-app
+    networks:
+      apps: {ipv4_address: 172.30.0.13}
+
+  # --- profile "peer": a NetBird routing peer, the only way into "apps".
+  # In the NetBird dashboard, add 172.30.0.0/24 as a network resource routed
+  # through this peer, then point each reverse proxy service at
+  # 172.30.0.11:8001 (whoami), 172.30.0.12:8002 (tickets-mcp, path /mcp) or
+  # 172.30.0.13:8003 (notes-app).
+  netbird-peer:
+    profiles: [peer]
+    image: netbirdio/netbird:latest
+    environment:
+      NB_SETUP_KEY: ${NB_SETUP_KEY:-} # required for this profile
+      NB_HOSTNAME: app-authz-examples
+    cap_add: [NET_ADMIN, SYS_ADMIN, SYS_RESOURCE]
+    volumes:
+      - netbird-peer:/var/lib/netbird
+    networks: [apps, edge]
+    restart: unless-stopped
+
+  # --- profile "dev": stand-ins for the NetBird proxy, on localhost only.
+  fake-proxy-whoami:
+    profiles: [dev]
+    build: ./dev
+    command: [--upstream, "http://whoami:8001", --listen, "0.0.0.0:9001", --mode, headers, --preset, admin, --domain, whoami.localhost]
+    volumes: ["./dev/keys:/keys"]
+    ports: ["127.0.0.1:9001:9001"]
+    networks: [apps, edge]
+
+  fake-proxy-tickets:
+    profiles: [dev]
+    build: ./dev
+    command: [--upstream, "http://tickets-mcp:8002", --listen, "0.0.0.0:9002", --mode, jwt, --preset, viewer, --domain, tickets.localhost, --enforce-mcp]
+    volumes: ["./dev/keys:/keys"]
+    ports: ["127.0.0.1:9002:9002"]
+    networks: [apps, edge]
+
+  fake-proxy-notes:
+    profiles: [dev]
+    build: ./dev
+    command: [--upstream, "http://notes-app:8003", --listen, "0.0.0.0:9003", --mode, headers, --preset, viewer, --domain, notes.localhost]
+    volumes: ["./dev/keys:/keys"]
+    ports: ["127.0.0.1:9003:9003"]
+    networks: [apps, edge]
+
+networks:
+  apps:
+    internal: true # no published ports, no internet; only peers on this network get in
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  edge: {}
+
+volumes:
+  netbird-peer:
