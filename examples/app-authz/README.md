@@ -461,6 +461,24 @@ python3 dev/mint_token.py pem
 docker compose --profile dev up --build
 ```
 
+### Behind your NetBird server
+
+[`docker-compose.netbird.yml`](docker-compose.netbird.yml) runs the three
+apps inside the network of a NetBird peer container. They are reachable only
+over NetBird and publish no ports on the host.
+
+1. Create a setup key in the NetBird dashboard.
+2. `cp .env.netbird.example .env` and fill in `NB_SETUP_KEY`,
+   `NB_MANAGEMENT_URL` and the service domains.
+3. `docker compose -f docker-compose.netbird.yml up -d --build`
+4. In the dashboard, create a service per app and point its target at the
+   `app-authz-examples` peer: whoami on port 8001, tickets-mcp on 8002
+   (endpoint `/mcp`, JWT mode required), notes-app on 8003.
+
+The domains in `.env` must match the services exactly: JWT mode checks that
+the token's audience is the service domain. tickets-mcp fetches the JWKS from
+`https://<TICKETS_DOMAIN>/.well-known/netbird/jwks.json` on its first request.
+
 `whoami` and `tickets-mcp` share `netbird_identity.py`, a single-file helper
 you can drop into any Python app: `IdentityVerifier.from_env().identify(headers)`
 returns the caller or raises `IdentityError`.

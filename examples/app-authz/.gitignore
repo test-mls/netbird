@@ -10,3 +10,6 @@ venv/
 
 # Node
 node_modules/
+
+# Local settings for docker-compose.netbird.yml; holds the setup key.
+.env

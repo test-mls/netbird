@@ -1,0 +1,65 @@
+# Run the example apps behind a real NetBird server.
+#
+# The apps share the network of a NetBird peer container, so they are
+# reachable only over NetBird: no ports are published on the host. In the
+# dashboard, point each reverse proxy service at the "app-authz-examples" peer:
+#   whoami       port 8001
+#   tickets-mcp  port 8002 (MCP endpoint at /mcp)
+#   notes-app    port 8003
+#
+# Usage:
+#   cp .env.netbird.example .env   # then fill it in
+#   docker compose -f docker-compose.netbird.yml up -d --build
+#
+# The domains must match the services you create in NetBird: JWT mode checks
+# that the token's audience is exactly that domain.
+
+services:
+  netbird:
+    image: netbirdio/netbird:latest
+    hostname: app-authz-examples
+    environment:
+      NB_SETUP_KEY: ${NB_SETUP_KEY:?set NB_SETUP_KEY in .env}
+      NB_MANAGEMENT_URL: ${NB_MANAGEMENT_URL:?set NB_MANAGEMENT_URL in .env}
+      NB_HOSTNAME: app-authz-examples
+    cap_add: [NET_ADMIN, SYS_ADMIN, SYS_RESOURCE]
+    volumes:
+      - netbird-client:/var/lib/netbird
+    restart: unless-stopped
+
+  # Shows the identity NetBird forwards. Headers mode by default; set
+  # WHOAMI_MODE=jwt to verify the token instead. /admin needs the role "admin".
+  whoami:
+    build: ./whoami
+    network_mode: service:netbird
+    depends_on: [netbird]
+    environment:
+      NETBIRD_IDENTITY_MODE: ${WHOAMI_MODE:-headers}
+      NETBIRD_AUDIENCE: ${WHOAMI_DOMAIN:-}
+      NETBIRD_JWKS_URL: https://${WHOAMI_DOMAIN:-unset}/.well-known/netbird/jwks.json
+      NETBIRD_JWT_HEADER: ${WHOAMI_JWT_HEADER:-X-NetBird-Identity}
+    restart: unless-stopped
+
+  # MCP server. Needs the service in JWT mode: tool permissions travel in the
+  # token. The JWKS is fetched from the service domain on the first request.
+  tickets-mcp:
+    build: ./tickets-mcp
+    network_mode: service:netbird
+    depends_on: [netbird]
+    environment:
+      NETBIRD_IDENTITY_MODE: jwt
+      NETBIRD_AUDIENCE: ${TICKETS_DOMAIN:?set TICKETS_DOMAIN in .env}
+      NETBIRD_JWKS_URL: https://${TICKETS_DOMAIN}/.well-known/netbird/jwks.json
+      NETBIRD_JWT_HEADER: ${TICKETS_JWT_HEADER:-X-NetBird-Identity}
+    restart: unless-stopped
+
+  # A typical generated CRUD app moved off its own login. Headers mode; the
+  # delete button needs the role "editor".
+  notes-app:
+    build: ./notes-app
+    network_mode: service:netbird
+    depends_on: [netbird]
+    restart: unless-stopped
+
+volumes:
+  netbird-client:
