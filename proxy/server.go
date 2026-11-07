@@ -81,6 +81,7 @@ type portRouter struct {
 
 type Server struct {
 	ctx               context.Context
+	jwks              jwksStore
 	mgmtClient        proto.ProxyServiceClient
 	proxy             *proxy.ReverseProxy
 	netbird           *roundtrip.NetBird
@@ -634,6 +635,7 @@ func (s *Server) initGeoLookup() error {
 func (s *Server) buildHandlerChain() http.Handler {
 	handler := http.Handler(s.proxy)
 	handler = s.auth.Protect(handler)
+	handler = s.jwks.middleware(handler)
 	handler = web.AssetHandler(handler)
 	handler = s.accessLog.Middleware(handler)
 	handler = s.meter.Middleware(handler)
@@ -2131,6 +2133,7 @@ func (s *Server) updateMapping(ctx context.Context, mapping *proto.ProxyMapping)
 	s.auth.AddDomainConfig(mapping.GetDomain(), config)
 	s.meter.AddMapping(m)
 	s.proxy.AddMapping(m)
+	s.jwks.set(mapping.GetDomain(), jwksForMapping(mapping))
 	return nil
 }
 
@@ -2292,6 +2295,7 @@ func (s *Server) cleanupMappingRoutes(mapping *proto.ProxyMapping) {
 			s.meter.RemoveMapping(proxy.Mapping{Host: host})
 		}
 		s.auth.RemoveDomain(host)
+		s.jwks.set(host, nil)
 		// Close hijacked connections (WebSocket) for this domain.
 		if n := s.hijackTracker.CloseByHost(host); n > 0 {
 			s.Logger.Debugf("closed %d hijacked connection(s) for %s", n, host)
