@@ -160,6 +160,9 @@ type AuthConfig struct {
 	PinAuth      *PINAuthConfig      `json:"pin_auth,omitempty" gorm:"serializer:json"`
 	BearerAuth   *BearerAuthConfig   `json:"bearer_auth,omitempty" gorm:"serializer:json"`
 	HeaderAuths  []*HeaderAuthConfig `json:"header_auths,omitempty" gorm:"serializer:json"`
+	// Authorization holds role mappings, MCP tool permissions and identity
+	// forwarding for HTTP services. Nil means none.
+	Authorization *AuthorizationConfig `json:"authorization,omitempty" gorm:"serializer:json"`
 }
 
 // AccessRestrictions controls who can connect to the service based on IP or geography.
@@ -308,6 +311,8 @@ func (s *Service) ToAPIResponse() *api.Service {
 		authConfig.HeaderAuths = &apiHeaders
 	}
 
+	authConfig.Authorization = s.authorizationToAPI()
+
 	// Convert internal targets to API targets
 	apiTargets := make([]api.ServiceTarget, 0, len(s.Targets))
 	for _, target := range s.Targets {
@@ -433,6 +438,10 @@ func (s *Service) ToProtoMapping(operation Operation, authToken string, oidcConf
 // For L4/TLS, a single target maps to a host:port address.
 func (s *Service) buildPathMappings() []*proto.PathMapping {
 	pathMappings := make([]*proto.PathMapping, 0, len(s.Targets))
+	var appAuthz *proto.MiddlewareConfig
+	if !IsL4Protocol(s.Mode) {
+		appAuthz = s.appAuthzMiddleware()
+	}
 	for _, target := range s.Targets {
 		if !target.Enabled {
 			continue
@@ -472,6 +481,7 @@ func (s *Service) buildPathMappings() []*proto.PathMapping {
 			AccessAction: targetAccessActionToProto(target.effectiveAccessAction()),
 		}
 		pm.Options = targetOptionsToProto(target.Options)
+		s.attachAppAuthz(pm, appAuthz)
 		pathMappings = append(pathMappings, pm)
 	}
 	return pathMappings
@@ -795,6 +805,7 @@ func authFromAPI(reqAuth *api.ServiceAuthConfig) AuthConfig {
 			})
 		}
 	}
+	auth.Authorization = authorizationFromAPI(reqAuth.Authorization)
 	return auth
 }
 
@@ -882,6 +893,9 @@ func (s *Service) Validate() error {
 	}
 
 	if err := validateHeaderAuths(s.Auth.HeaderAuths); err != nil {
+		return err
+	}
+	if err := s.validateAuthorization(); err != nil {
 		return err
 	}
 	if err := validateAccessRestrictions(&s.Restrictions); err != nil {
@@ -1472,6 +1486,7 @@ func (s *Service) Copy() *Service {
 			authCopy.HeaderAuths[i] = &hCopy
 		}
 	}
+	authCopy.Authorization = s.Auth.Authorization.Copy()
 
 	var accessGroups []string
 	if len(s.AccessGroups) > 0 {

@@ -983,6 +983,42 @@ func (e ServiceMode) Valid() bool {
 	}
 }
 
+// Defines values for ServiceAuthorizationConfigForwarding.
+const (
+	ServiceAuthorizationConfigForwardingHeaders ServiceAuthorizationConfigForwarding = "headers"
+	ServiceAuthorizationConfigForwardingJwt     ServiceAuthorizationConfigForwarding = "jwt"
+)
+
+// Valid indicates whether the value is a known member of the ServiceAuthorizationConfigForwarding enum.
+func (e ServiceAuthorizationConfigForwarding) Valid() bool {
+	switch e {
+	case ServiceAuthorizationConfigForwardingHeaders:
+		return true
+	case ServiceAuthorizationConfigForwardingJwt:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ServiceAuthorizationConfigJwtHeader.
+const (
+	ServiceAuthorizationConfigJwtHeaderAuthorization    ServiceAuthorizationConfigJwtHeader = "Authorization"
+	ServiceAuthorizationConfigJwtHeaderXNetBirdIdentity ServiceAuthorizationConfigJwtHeader = "X-NetBird-Identity"
+)
+
+// Valid indicates whether the value is a known member of the ServiceAuthorizationConfigJwtHeader enum.
+func (e ServiceAuthorizationConfigJwtHeader) Valid() bool {
+	switch e {
+	case ServiceAuthorizationConfigJwtHeaderAuthorization:
+		return true
+	case ServiceAuthorizationConfigJwtHeaderXNetBirdIdentity:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ServiceMetaStatus.
 const (
 	ServiceMetaStatusActive             ServiceMetaStatus = "active"
@@ -5103,12 +5139,44 @@ type ServiceMode string
 
 // ServiceAuthConfig defines model for ServiceAuthConfig.
 type ServiceAuthConfig struct {
-	BearerAuth   *BearerAuthConfig   `json:"bearer_auth,omitempty"`
-	HeaderAuths  *[]HeaderAuthConfig `json:"header_auths,omitempty"`
-	LinkAuth     *LinkAuthConfig     `json:"link_auth,omitempty"`
-	PasswordAuth *PasswordAuthConfig `json:"password_auth,omitempty"`
-	PinAuth      *PINAuthConfig      `json:"pin_auth,omitempty"`
+	// Authorization Application authorization for an HTTP service. The proxy resolves roles from the caller's groups, can restrict which MCP tools each role may call, and forwards the identity upstream as headers or a signed JWT.
+	Authorization *ServiceAuthorizationConfig `json:"authorization,omitempty"`
+	BearerAuth    *BearerAuthConfig           `json:"bearer_auth,omitempty"`
+	HeaderAuths   *[]HeaderAuthConfig         `json:"header_auths,omitempty"`
+	LinkAuth      *LinkAuthConfig             `json:"link_auth,omitempty"`
+	PasswordAuth  *PasswordAuthConfig         `json:"password_auth,omitempty"`
+	PinAuth       *PINAuthConfig              `json:"pin_auth,omitempty"`
 }
+
+// ServiceAuthorizationConfig Application authorization for an HTTP service. The proxy resolves roles from the caller's groups, can restrict which MCP tools each role may call, and forwards the identity upstream as headers or a signed JWT.
+type ServiceAuthorizationConfig struct {
+	// ApiKeyRoles Roles granted to callers authenticated with header auth (API keys), which carry no groups. Each must name a role in roles.
+	ApiKeyRoles *[]string `json:"api_key_roles,omitempty"`
+
+	// EnforceMcp When true, the proxy denies MCP tools/call requests for tools the caller's roles do not grant.
+	EnforceMcp *bool `json:"enforce_mcp,omitempty"`
+
+	// Forwarding How the identity reaches the upstream. headers adds X-NetBird-User-Id, X-NetBird-Roles and X-NetBird-Auth-Method; jwt adds a short-lived EdDSA JWT.
+	Forwarding ServiceAuthorizationConfigForwarding `json:"forwarding"`
+
+	// JwtHeader Header that carries the JWT in jwt mode. Defaults to X-NetBird-Identity.
+	JwtHeader *ServiceAuthorizationConfigJwtHeader `json:"jwt_header,omitempty"`
+
+	// KeyId The kid header of JWTs signed for this service. Set in responses in jwt mode.
+	KeyId *string `json:"key_id,omitempty"`
+
+	// PublicKeyPem PEM-encoded Ed25519 public key upstreams use to verify the JWT. Set in responses in jwt mode.
+	PublicKeyPem *string `json:"public_key_pem,omitempty"`
+
+	// Roles Role mappings. A caller gets every role whose groups include one of the caller's groups.
+	Roles *[]ServiceRoleMapping `json:"roles,omitempty"`
+}
+
+// ServiceAuthorizationConfigForwarding How the identity reaches the upstream. headers adds X-NetBird-User-Id, X-NetBird-Roles and X-NetBird-Auth-Method; jwt adds a short-lived EdDSA JWT.
+type ServiceAuthorizationConfigForwarding string
+
+// ServiceAuthorizationConfigJwtHeader Header that carries the JWT in jwt mode. Defaults to X-NetBird-Identity.
+type ServiceAuthorizationConfigJwtHeader string
 
 // ServiceMeta defines model for ServiceMeta.
 type ServiceMeta struct {
@@ -5164,6 +5232,18 @@ type ServiceRequest struct {
 
 // ServiceRequestMode Service mode. "http" for L7 reverse proxy, "tcp"/"udp"/"tls" for L4 passthrough.
 type ServiceRequestMode string
+
+// ServiceRoleMapping defines model for ServiceRoleMapping.
+type ServiceRoleMapping struct {
+	// Groups Group IDs that grant this role
+	Groups *[]string `json:"groups,omitempty"`
+
+	// McpTools MCP tool names or glob patterns (* matches any characters) this role may call
+	McpTools *[]string `json:"mcp_tools,omitempty"`
+
+	// Name Role name forwarded to the upstream
+	Name string `json:"name"`
+}
 
 // ServiceTarget defines model for ServiceTarget.
 type ServiceTarget struct {
