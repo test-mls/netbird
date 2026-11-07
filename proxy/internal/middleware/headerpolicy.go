@@ -14,6 +14,7 @@ var appAuthzHeaders = []string{
 	"X-NetBird-Roles",
 	"X-NetBird-Auth-Method",
 	"X-NetBird-Identity",
+	"X-NetBird-MCP-Tools",
 	"Authorization",
 }
 

@@ -19,6 +19,10 @@ const tokenLifetime = 60 * time.Second
 // claims is the upstream identity token payload.
 type claims struct {
 	jwt.RegisteredClaims
+	// Aud shadows RegisteredClaims.Audience so the claim is a single string.
+	// golang-jwt encodes ClaimStrings as an array, which breaks the plain
+	// string comparisons app authors tend to write.
+	Aud        string   `json:"aud,omitempty"`
 	Email      string   `json:"email,omitempty"`
 	Groups     []string `json:"groups,omitempty"`
 	Roles      []string `json:"roles"`
@@ -72,9 +76,7 @@ func (s *signer) sign(id identity) (string, error) {
 		MCPTools:   id.tools,
 		AuthMethod: id.authMethod,
 	}
-	if s.audience != "" {
-		c.Audience = jwt.ClaimStrings{s.audience}
-	}
+	c.Aud = s.audience
 	if c.Roles == nil {
 		c.Roles = []string{}
 	}
@@ -85,6 +87,14 @@ func (s *signer) sign(id identity) (string, error) {
 		return "", fmt.Errorf("sign upstream token: %w", err)
 	}
 	return signed, nil
+}
+
+// GetAudience returns the single-string audience to the jwt validator.
+func (c claims) GetAudience() (jwt.ClaimStrings, error) {
+	if c.Aud == "" {
+		return nil, nil
+	}
+	return jwt.ClaimStrings{c.Aud}, nil
 }
 
 func newJTI() (string, error) {

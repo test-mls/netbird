@@ -95,14 +95,30 @@ func (m *Middleware) Invoke(_ context.Context, in *middleware.Input) (*middlewar
 // checkTools returns a deny output when the request carries a tools/call the
 // caller's roles do not grant, or a body that cannot be inspected.
 func (m *Middleware) checkTools(in *middleware.Input, patterns []string, meta []middleware.KV) *middleware.Output {
-	calls, err := toolCalls(in.Method, kvToHeader(in.Headers), in.Body, in.BodyTruncated)
+	body, err := parseBody(in.Method, kvToHeader(in.Headers), in.Body, in.BodyTruncated)
 	if err != nil {
-		return deny(denyCodeUninspectable, err.Error(), "", meta)
+		return deny(denyCodeUninspectable, err.Error(), "", nil, meta)
 	}
-	for _, tool := range calls {
-		if !appauthz.ToolAllowed(patterns, tool) {
-			return deny(denyCodeToolForbidden, "your roles do not allow this MCP tool", tool, meta)
+	var calls []string
+	var denied bool
+	var firstDenied string
+	mcp := &middleware.MCPDeny{Batch: body.batch}
+	for _, msg := range body.messages {
+		req := middleware.MCPDeniedRequest{ID: msg.id, Tool: msg.tool}
+		if msg.isCall {
+			calls = append(calls, msg.tool)
+			if !appauthz.ToolAllowed(patterns, msg.tool) {
+				if !denied {
+					firstDenied = msg.tool
+				}
+				req.Denied = true
+				denied = true
+			}
 		}
+		mcp.Requests = append(mcp.Requests, req)
+	}
+	if denied {
+		return deny(denyCodeToolForbidden, "your roles do not allow this MCP tool", firstDenied, mcp, meta)
 	}
 	if len(calls) == 1 {
 		meta = append(meta, middleware.KV{Key: keyTool, Value: calls[0]})
@@ -110,7 +126,7 @@ func (m *Middleware) checkTools(in *middleware.Input, patterns []string, meta []
 	return nil
 }
 
-func deny(code, message, tool string, meta []middleware.KV) *middleware.Output {
+func deny(code, message, tool string, mcp *middleware.MCPDeny, meta []middleware.KV) *middleware.Output {
 	details := map[string]string{}
 	if tool != "" {
 		details["tool"] = tool
@@ -119,7 +135,7 @@ func deny(code, message, tool string, meta []middleware.KV) *middleware.Output {
 	return &middleware.Output{
 		Decision:   middleware.DecisionDeny,
 		DenyStatus: http.StatusForbidden,
-		DenyReason: &middleware.DenyReason{Code: code, Message: message, Details: details},
+		DenyReason: &middleware.DenyReason{Code: code, Message: message, Details: details, MCP: mcp},
 		Metadata:   append(meta, middleware.KV{Key: keyDecision, Value: "deny"}),
 	}
 }
@@ -129,7 +145,7 @@ func deny(code, message, tool string, meta []middleware.KV) *middleware.Output {
 // authenticated user gets the strip only.
 func (m *Middleware) identityMutations(in *middleware.Input, roles, tools []string) (*middleware.Mutations, error) {
 	mut := &middleware.Mutations{
-		HeadersRemove: []string{appauthz.HeaderUserID, appauthz.HeaderRoles, appauthz.HeaderAuthMethod, appauthz.HeaderIdentity},
+		HeadersRemove: []string{appauthz.HeaderUserID, appauthz.HeaderRoles, appauthz.HeaderAuthMethod, appauthz.HeaderIdentity, appauthz.HeaderMCPTools},
 	}
 	if in.UserID == "" {
 		return mut, nil
@@ -162,6 +178,11 @@ func (m *Middleware) identityMutations(in *middleware.Input, roles, tools []stri
 		)
 		if len(roles) > 0 {
 			mut.HeadersAdd = append(mut.HeadersAdd, middleware.KV{Key: appauthz.HeaderRoles, Value: strings.Join(roles, ",")})
+		}
+		// Tool patterns let an MCP server in headers mode filter tools/list
+		// without copying the role mapping into the app.
+		if len(tools) > 0 {
+			mut.HeadersAdd = append(mut.HeadersAdd, middleware.KV{Key: appauthz.HeaderMCPTools, Value: strings.Join(tools, ",")})
 		}
 	}
 	return mut, nil

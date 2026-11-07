@@ -126,7 +126,7 @@ def mint(
     now = int(time.time())
     claims: dict = {
         "iss": issuer or f"https://{domain}",
-        "aud": [domain],
+        "aud": domain,
         "sub": sub,
         "jti": secrets.token_hex(16),
         "iat": now,

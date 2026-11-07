@@ -47,6 +47,7 @@ const (
 	HeaderRoles      = "X-NetBird-Roles"
 	HeaderAuthMethod = "X-NetBird-Auth-Method"
 	HeaderIdentity   = "X-NetBird-Identity"
+	HeaderMCPTools   = "X-NetBird-MCP-Tools"
 	HeaderAuthorize  = "Authorization"
 )
 

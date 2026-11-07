@@ -55,18 +55,20 @@ def tool_allowed(patterns: list[str], tool: str) -> bool:
     return False
 
 
-def tool_calls(body: bytes) -> list[str]:
-    """Tool names of every tools/call in a JSON-RPC body (single or batch). Raises on junk."""
+def parse_rpc(body: bytes) -> tuple[bool, list[tuple[object, str | None]]]:
+    """(is_batch, [(id, tool name or None)]) for a JSON-RPC body. Raises on junk."""
     msg = json.loads(body)
-    messages = msg if isinstance(msg, list) else [msg]
-    names = []
-    for m in messages:
+    batch = isinstance(msg, list)
+    out = []
+    for m in msg if batch else [msg]:
         if not isinstance(m, dict):
             raise ValueError("not a JSON-RPC object")
+        tool = None
         if m.get("method") == "tools/call":
             params = m.get("params") or {}
-            names.append(params.get("name", "") if isinstance(params, dict) else "")
-    return names
+            tool = params.get("name", "") if isinstance(params, dict) else ""
+        out.append((m.get("id"), tool))
+    return batch, out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -130,15 +132,36 @@ class Handler(BaseHTTPRequestHandler):
         if not body.strip():
             return True
         try:
-            calls = tool_calls(body)
+            batch, messages = parse_rpc(body)
         except (ValueError, json.JSONDecodeError):
             self._deny("mcp_request_uninspectable", "request body is not unambiguous JSON-RPC", "")
             return False
-        for name in calls:
-            if not tool_allowed(self.ident.get("mcp_tools") or [], name):
-                self._deny("mcp_tool_forbidden", "your roles do not allow this MCP tool", name)
-                return False
-        return True
+        allowed = self.ident.get("mcp_tools") or []
+        denied = {i for i, (_, tool) in enumerate(messages) if tool is not None and not tool_allowed(allowed, tool)}
+        if not denied:
+            return True
+        self._deny_rpc(batch, messages, denied)
+        return False
+
+    def _deny_rpc(self, batch, messages, denied):
+        """Answer like the real proxy: HTTP 200 with a tool result flagged isError
+        for each denied call, and an error for the rest of a rejected batch."""
+        responses = []
+        for i, (rpc_id, tool) in enumerate(messages):
+            if not isinstance(rpc_id, (int, float, str)) or isinstance(rpc_id, bool):
+                continue
+            if i in denied:
+                text = f"NetBird denied this tool call: your roles do not allow the MCP tool {json.dumps(tool)}."
+                responses.append({"jsonrpc": "2.0", "id": rpc_id,
+                                  "result": {"content": [{"type": "text", "text": text}], "isError": True}})
+            else:
+                responses.append({"jsonrpc": "2.0", "id": rpc_id, "error": {
+                    "code": -32600, "message": "request rejected: the batch contains a tool call your roles do not allow"}})
+        self.log_message("deny mcp_tool_forbidden tools=%r", [messages[i][1] for i in sorted(denied)])
+        if not responses:
+            self._send_json(403, {"code": "mcp_tool_forbidden", "middleware": "app_authz"})
+            return
+        self._send_json(200, responses if batch else responses[0])
 
     def _deny(self, code: str, message: str, tool: str):
         payload = {"code": code, "message": message, "middleware": "app_authz"}
@@ -176,6 +199,8 @@ class Handler(BaseHTTPRequestHandler):
             out["X-NetBird-Auth-Method"] = ident.get("auth_method", "oidc")
             if ident.get("roles"):
                 out["X-NetBird-Roles"] = ",".join(ident["roles"])
+            if ident.get("mcp_tools"):
+                out["X-NetBird-MCP-Tools"] = ",".join(ident["mcp_tools"])
             return out
 
         token = devkeys.mint(

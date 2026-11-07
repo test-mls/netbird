@@ -3,6 +3,7 @@ package app_authz
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -259,4 +260,66 @@ func TestFactoryRejectsBadConfig(t *testing.T) {
 
 	_, err = Factory{}.New([]byte(`{}`))
 	assert.Error(t, err, "an empty config has no forwarding mode and must not build")
+}
+
+func TestDeniedCallAnswersInProtocol(t *testing.T) {
+	m := build(t, baseConfig())
+
+	out, err := m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("delete_ticket")))
+	require.NoError(t, err)
+	require.Equal(t, middleware.DecisionDeny, out.Decision)
+	mcp := out.DenyReason.MCP
+	require.NotNil(t, mcp, "a parsed tools/call denial carries what the JSON-RPC answer needs")
+	assert.False(t, mcp.Batch)
+	require.Len(t, mcp.Requests, 1)
+	assert.Equal(t, "1", string(mcp.Requests[0].ID), "the request id is kept so the answer matches the call")
+	assert.Equal(t, "delete_ticket", mcp.Requests[0].Tool)
+	assert.True(t, mcp.Requests[0].Denied)
+
+	batch := []byte(`[` + string(toolCallBody("list_tickets")) + `,{"jsonrpc":"2.0","id":"b","method":"tools/call","params":{"name":"delete_ticket"}}]`)
+	out, err = m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, batch))
+	require.NoError(t, err)
+	require.NotNil(t, out.DenyReason.MCP)
+	assert.True(t, out.DenyReason.MCP.Batch)
+	require.Len(t, out.DenyReason.MCP.Requests, 2)
+	assert.False(t, out.DenyReason.MCP.Requests[0].Denied, "the allowed call is not marked denied")
+	assert.True(t, out.DenyReason.MCP.Requests[1].Denied)
+	assert.Equal(t, "delete_ticket", out.DenyReason.Details["tool"], "details name the first denied tool")
+
+	out, err = m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, []byte(`{"method":`)))
+	require.NoError(t, err)
+	assert.Nil(t, out.DenyReason.MCP, "a body that could not be parsed gets the plain HTTP deny")
+}
+
+func TestHeadersModeSendsToolPatterns(t *testing.T) {
+	m := build(t, baseConfig())
+
+	out, err := m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("list_tickets")))
+	require.NoError(t, err)
+	assert.Equal(t, "list_*,get_ticket", headerValue(out.Mutations.HeadersAdd, appauthz.HeaderMCPTools), "MCP servers in headers mode can filter tools/list")
+	assert.Contains(t, out.Mutations.HeadersRemove, appauthz.HeaderMCPTools, "client copies are stripped")
+
+	_, _, blocked := middleware.FilterHeaderMutationsFor(out.Mutations, ID)
+	assert.Empty(t, blocked, "the tools header passes the header policy")
+}
+
+func TestJWTAudienceIsAString(t *testing.T) {
+	cfg, pub := jwtConfig(t, "")
+	m := build(t, cfg)
+
+	out, err := m.Invoke(context.Background(), postInput("alice", "oidc", []string{"grp-ops"}, toolCallBody("list_tickets")))
+	require.NoError(t, err)
+	raw := headerValue(out.Mutations.HeadersAdd, appauthz.HeaderIdentity)
+
+	parts := strings.Split(raw, ".")
+	require.Len(t, parts, 3)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var generic map[string]any
+	require.NoError(t, json.Unmarshal(payload, &generic))
+	assert.Equal(t, "tickets.acme.io", generic["aud"], "aud is a plain string, not an array")
+
+	_, err = jwt.ParseWithClaims(raw, &claims{}, func(*jwt.Token) (any, error) { return pub, nil },
+		jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithAudience("tickets.acme.io"))
+	assert.NoError(t, err, "audience validation still works with the string form")
 }

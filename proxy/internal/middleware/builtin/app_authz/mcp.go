@@ -21,81 +21,91 @@ var (
 	errBodyNotJSONRPC   = errors.New("request body is not unambiguous JSON-RPC")
 )
 
-// toolCalls returns the tool names of every tools/call message in a POST
-// body. A single message and a batch array are both accepted. Any body the
-// proxy did not fully capture, or cannot parse as JSON-RPC without ambiguity,
-// is an error so the caller can fail closed: a tools/call it cannot see is
-// one it cannot authorize.
-func toolCalls(method string, headers http.Header, body []byte, truncated bool) ([]string, error) {
+// rpcCall is one JSON-RPC message of a request body.
+type rpcCall struct {
+	id     json.RawMessage
+	tool   string
+	isCall bool
+}
+
+// rpcBody is a parsed POST body.
+type rpcBody struct {
+	batch    bool
+	messages []rpcCall
+}
+
+// parseBody parses a POST body into its JSON-RPC messages. A single message
+// and a batch array are both accepted. Any body the proxy did not fully
+// capture, or cannot parse as JSON-RPC without ambiguity, is an error so the
+// caller can fail closed: a tools/call it cannot see is one it cannot
+// authorize. Non-POST requests carry no calls.
+func parseBody(method string, headers http.Header, body []byte, truncated bool) (rpcBody, error) {
 	if method != http.MethodPost {
-		return nil, nil
+		return rpcBody{}, nil
 	}
 	if truncated {
-		return nil, errBodyNotInspected
+		return rpcBody{}, errBodyNotInspected
 	}
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
 		if headers.Get("Content-Length") == "0" {
-			return nil, nil
+			return rpcBody{}, nil
 		}
-		return nil, errBodyNotInspected
+		return rpcBody{}, errBodyNotInspected
 	}
 
-	var raws []json.RawMessage
-	if trimmed[0] == '[' {
+	parsed := rpcBody{batch: trimmed[0] == '['}
+	raws := []json.RawMessage{trimmed}
+	if parsed.batch {
+		raws = nil
 		if err := json.Unmarshal(trimmed, &raws); err != nil {
-			return nil, errBodyNotJSONRPC
+			return rpcBody{}, errBodyNotJSONRPC
 		}
-	} else {
-		raws = []json.RawMessage{trimmed}
 	}
-
-	var tools []string
 	for _, raw := range raws {
-		tool, isCall, err := parseMessage(raw)
+		msg, err := parseMessage(raw)
 		if err != nil {
-			return nil, err
+			return rpcBody{}, err
 		}
-		if isCall {
-			tools = append(tools, tool)
-		}
+		parsed.messages = append(parsed.messages, msg)
 	}
-	return tools, nil
+	return parsed, nil
 }
 
-// parseMessage reports whether raw is a tools/call and, if so, its tool name.
-func parseMessage(raw json.RawMessage) (string, bool, error) {
+// parseMessage reads the id, method and tool name of one message.
+func parseMessage(raw json.RawMessage) (rpcCall, error) {
 	fields, err := strictObject(raw)
 	if err != nil {
-		return "", false, err
+		return rpcCall{}, err
 	}
+	call := rpcCall{id: fields["id"]}
 	methodRaw, ok := fields["method"]
 	if !ok {
 		// A response or an error object; nothing to authorize.
-		return "", false, nil
+		return call, nil
 	}
 	var method string
 	if err := json.Unmarshal(methodRaw, &method); err != nil {
-		return "", false, errBodyNotJSONRPC
+		return rpcCall{}, errBodyNotJSONRPC
 	}
 	if method != methodToolsCall {
-		return "", false, nil
+		return call, nil
 	}
+	call.isCall = true
 	paramsRaw, ok := fields["params"]
 	if !ok {
-		return "", true, nil
+		return call, nil
 	}
 	params, err := strictObject(paramsRaw)
 	if err != nil {
-		return "", false, err
+		return rpcCall{}, err
 	}
-	var name string
 	if nameRaw, ok := params["name"]; ok {
-		if err := json.Unmarshal(nameRaw, &name); err != nil {
-			return "", false, errBodyNotJSONRPC
+		if err := json.Unmarshal(nameRaw, &call.tool); err != nil {
+			return rpcCall{}, errBodyNotJSONRPC
 		}
 	}
-	return name, true, nil
+	return call, nil
 }
 
 // strictObject decodes a JSON object into its fields with exact-case keys.

@@ -185,6 +185,9 @@ type DenyReason struct {
 	// non-LLM middlewares and for denials raised before a surface was
 	// resolved; the body then carries the NetBird fields alone.
 	Surface string
+	// MCP, when set, renders the denial as JSON-RPC responses so MCP clients
+	// show the refusal to the model instead of failing the request.
+	MCP *MCPDeny
 }
 
 // Output is the value each middleware returns to the dispatcher. The

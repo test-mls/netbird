@@ -91,6 +91,9 @@ func openAIErrorType(status int) string {
 // truncated. On any validation failure the function writes a generic
 // 403.
 func RenderDenyResponse(w http.ResponseWriter, middlewareID string, reason *DenyReason, defaultStatus int) {
+	if reason != nil && reason.MCP != nil && renderMCPDeny(w, reason.MCP) {
+		return
+	}
 	status := clampDenyStatus(defaultStatus)
 
 	if reason == nil || !codeRegex.MatchString(reason.Code) {

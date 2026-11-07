@@ -27,8 +27,8 @@ This folder has working examples you can copy:
   `ops` → `admin` and `eng` → `viewer`.
 - **MCP tool permissions.** For MCP servers, each role lists the tools it may
   call (`*` is a wildcard, so `list_*` means "every tool starting with
-  list_"). NetBird blocks a forbidden `tools/call` with HTTP 403 before it
-  reaches your server.
+  list_"). NetBird blocks a forbidden `tools/call` before it reaches your
+  server and answers the client with a tool error the AI can read.
 
 ```text
 browser / script / AI agent
@@ -66,6 +66,7 @@ browser / script / AI agent
 | `X-NetBird-Groups` | Group names, comma-separated, for example `ops,eng`. |
 | `X-NetBird-Roles` | Roles, comma-separated, for example `admin,viewer`. Missing means no roles. |
 | `X-NetBird-Auth-Method` | `oidc` (SSO), `header` (API key), `password` or `pin`. |
+| `X-NetBird-MCP-Tools` | MCP tool patterns the caller's roles allow, comma-separated, for example `list_*,get_ticket`. Missing means none. |
 
 NetBird removes any of these headers that the client sent and sets its own.
 
@@ -79,7 +80,7 @@ claims:
 ```json
 {
   "iss": "https://tickets.example.com",
-  "aud": ["tickets.example.com"],
+  "aud": "tickets.example.com",
   "sub": "usr_bob",
   "email": "bob@example.com",
   "groups": ["eng"],
@@ -130,7 +131,7 @@ plain headers. Ignore them and use only the verified claims.
 | --- | --- | --- |
 | Code in your app | 5 lines, any language | A JWT library and a key setting |
 | Safe if someone reaches the app directly? | **No.** They can send any header. | Yes. They cannot forge a signature. |
-| Carries MCP tool permissions? | No | Yes (`mcp_tools`) |
+| Carries MCP tool permissions? | Yes (`X-NetBird-MCP-Tools`), unsigned | Yes (`mcp_tools`), signed |
 | Tied to one service? | No | Yes (`aud` is the service domain) |
 | Good for | Internal dashboards on a locked-down network | MCP servers, anything with delete buttons, anything on a shared network or host |
 
@@ -151,7 +152,7 @@ listens on `127.0.0.1` on a machine only you control.
    request. Do not store it in the MCP session.
 3. **Filter `tools/list` by the `mcp_tools` claim.** NetBird blocks forbidden
    tool calls, but it does not hide tools from the list yet. If you skip this,
-   agents see tools they cannot call and waste turns on 403s.
+   agents see tools they cannot call and waste turns on refusals.
 4. **Re-check on `tools/call`.** The proxy already blocks forbidden calls; the
    second check costs one line and protects you if the proxy setting is ever
    turned off.
@@ -189,9 +190,11 @@ claude mcp add --transport http tickets https://tickets.example.com/mcp \
 ```
 
 Use the header name you chose in the dashboard, and keep files that hold the
-key out of git. A forbidden tool call comes
-back from NetBird as HTTP 403 with a JSON body such as
-`{"code":"mcp_tool_forbidden","details":{"tool":"delete_ticket"}}`.
+key out of git. A forbidden tool call comes back from NetBird as a normal
+MCP tool result with `"isError": true` and the text "NetBird denied this tool
+call: your roles do not allow the MCP tool "delete_ticket".", so the agent
+reads the refusal instead of seeing a broken connection. A body NetBird
+cannot read gets HTTP 403.
 
 The examples verify the token with a small PyJWT helper,
 [`netbird_identity.py`](tickets-mcp/netbird_identity.py), because it reads
