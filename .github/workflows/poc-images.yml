@@ -1,0 +1,88 @@
+name: PoC images
+
+# Builds images from work branches of a fork and pushes them to the fork's
+# GitHub Container Registry, so a branch can be tried on a real server before
+# it goes through the release pipeline. Image names match the ones the
+# self-hosted getting-started setup uses, so only the registry prefix and tag
+# change in docker-compose.yml.
+
+on:
+  push:
+    branches:
+      - "work/**"
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Target platforms, comma-separated"
+        required: false
+        default: "linux/amd64"
+
+concurrency:
+  group: poc-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    # Never publish from the upstream repository; its images come from release.yml.
+    if: github.repository != 'netbirdio/netbird'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: netbird-server
+            dockerfile: combined/Dockerfile.multistage
+          - image: reverse-proxy
+            dockerfile: proxy/Dockerfile.multistage
+          - image: management
+            dockerfile: management/Dockerfile.multistage
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        if: ${{ inputs.platforms != '' && inputs.platforms != 'linux/amd64' }}
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image name
+        id: name
+        run: echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.name.outputs.ref }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+            type=raw,value=poc
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
