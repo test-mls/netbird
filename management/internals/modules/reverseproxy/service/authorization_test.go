@@ -171,3 +171,20 @@ func TestServiceCopy_Authorization(t *testing.T) {
 	c.Auth.Authorization.Roles[0].Groups[0] = "changed"
 	assert.Equal(t, "grp-ops", s.Auth.Authorization.Roles[0].Groups[0], "copy must not share role slices")
 }
+
+func TestToProtoMapping_AppAuthzOAuthIssuer(t *testing.T) {
+	const issuer = "https://netbird.acme.io/api/mcp/auth"
+	oidc := proxy.OIDCValidationConfig{MCPAuthorizationServer: issuer}
+
+	s := authzService(t, appauthz.ForwardJWT)
+	s.Enabled = true
+	_, cfg := appAuthzFrom(t, s.ToProtoMapping(Create, "", oidc).Path[0])
+	assert.Equal(t, issuer, cfg.OAuthIssuer, "an SSO service with roles lets MCP clients sign in through the broker")
+
+	_, cfg = appAuthzFrom(t, s.ToProtoMapping(Create, "", proxy.OIDCValidationConfig{}).Path[0])
+	assert.Empty(t, cfg.OAuthIssuer, "no broker, no MCP sign-in")
+
+	s.Auth.BearerAuth.Enabled = false
+	_, cfg = appAuthzFrom(t, s.ToProtoMapping(Create, "", oidc).Path[0])
+	assert.Empty(t, cfg.OAuthIssuer, "without SSO there is no user to sign in")
+}

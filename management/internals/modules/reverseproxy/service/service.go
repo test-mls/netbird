@@ -382,7 +382,7 @@ func (s *Service) ToAPIResponse() *api.Service {
 
 // ToProtoMapping converts the service into the wire format the proxy consumes.
 func (s *Service) ToProtoMapping(operation Operation, authToken string, oidcConfig proxy.OIDCValidationConfig) *proto.ProxyMapping {
-	pathMappings := s.buildPathMappings()
+	pathMappings := s.buildPathMappings(oidcConfig.MCPAuthorizationServer)
 
 	auth := &proto.Authentication{
 		SessionKey:           s.SessionPublicKey,
@@ -436,11 +436,11 @@ func (s *Service) ToProtoMapping(operation Operation, authToken string, oidcConf
 // buildPathMappings constructs PathMapping entries from targets.
 // For HTTP/HTTPS, each target becomes a path-based route with a full URL.
 // For L4/TLS, a single target maps to a host:port address.
-func (s *Service) buildPathMappings() []*proto.PathMapping {
+func (s *Service) buildPathMappings(mcpAuthorizationServer string) []*proto.PathMapping {
 	pathMappings := make([]*proto.PathMapping, 0, len(s.Targets))
 	var appAuthz *proto.MiddlewareConfig
 	if !IsL4Protocol(s.Mode) {
-		appAuthz = s.appAuthzMiddleware()
+		appAuthz = s.appAuthzMiddleware(mcpAuthorizationServer)
 	}
 	for _, target := range s.Targets {
 		if !target.Enabled {

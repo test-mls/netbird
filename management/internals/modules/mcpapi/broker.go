@@ -98,6 +98,9 @@ type BrokerConfig struct {
 	Accounts Accounts
 	// Limiter is optional.
 	Limiter Limiter
+	// Services, when set, lets MCP clients sign in to reverse proxy services with SSO and
+	// roles, not only to management's own MCP endpoint.
+	Services ServiceTokens
 	// TrustedProxies are the reverse proxies whose X-Forwarded-For the callback's rate limit
 	// believes. Without them every request counts against the address it came from.
 	TrustedProxies []netip.Prefix
@@ -122,6 +125,7 @@ type Broker struct {
 	identity  Identity
 	accounts  Accounts
 	limiter   Limiter
+	services  ServiceTokens
 	callbacks *ratelimit.APIRateLimiter
 	http      *http.Client
 	now       func() time.Time
@@ -166,6 +170,7 @@ func NewBroker(cfg BrokerConfig) (*Broker, error) {
 		identity: cfg.Identity,
 		accounts: cfg.Accounts,
 		limiter:  cfg.Limiter,
+		services: cfg.Services,
 		http:     &http.Client{Timeout: 15 * time.Second},
 		now:      time.Now,
 		callbacks: ratelimit.NewAPIRateLimiter(&ratelimit.RateLimiterConfig{
@@ -438,20 +443,24 @@ func (b *Broker) authorize(w http.ResponseWriter, r *http.Request) {
 		fail("invalid_request", "PKCE with S256 is required")
 		return
 	}
-	if !resourceMatches(q["resource"], b.resourceURL(r)) {
-		fail("invalid_target", "the requested resource is not this MCP server")
+	resource, ok := b.requestedResource(r.Context(), r, q["resource"])
+	if !ok {
+		fail("invalid_target", "the requested resource is not this MCP server or a NetBird service that accepts MCP sign-in")
 		return
 	}
+	service, isService := serviceResourceHost(resource)
 
 	scopes := strings.Fields(q.Get("scope"))
 	req := consentRequest{
-		ClientKey:      clientKey(q.Get("client_id")),
-		ClientName:     client.Name,
-		RedirectURI:    redirectURI,
-		State:          state,
-		Challenge:      challenge,
-		WriteRequested: len(scopes) == 0 || slices.Contains(scopes, scopeWrite),
-		Resource:       b.resourceURL(r),
+		ClientKey:   clientKey(q.Get("client_id")),
+		ClientName:  client.Name,
+		RedirectURI: redirectURI,
+		State:       state,
+		Challenge:   challenge,
+		// Read and write scopes govern the management API. A service applies the roles the
+		// user's groups give, so there is nothing to choose.
+		WriteRequested: !isService && (len(scopes) == 0 || slices.Contains(scopes, scopeWrite)),
+		Resource:       resource,
 		Nonce:          randomToken(),
 		Expires:        b.now().Add(consentTTL).Unix(),
 	}
@@ -468,6 +477,7 @@ func (b *Broker) authorize(w http.ResponseWriter, r *http.Request) {
 		RedirectHost:   redirectHost(redirectURI),
 		Loopback:       isLoopbackRedirect(redirectURI),
 		WriteRequested: req.WriteRequested,
+		Service:        service,
 		Request:        sealed,
 		Action:         apiPrefix + authorizePath,
 	})
@@ -806,7 +816,7 @@ func (b *Broker) redeemCode(w http.ResponseWriter, r *http.Request, form url.Val
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the code verifier does not match")
 		return
 	}
-	if !resourceMatches(form["resource"], code.Resource) {
+	if !grantResourceMatches(form["resource"], code.Resource) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "the requested resource does not match the authorization")
 		return
 	}
@@ -862,7 +872,7 @@ func (b *Broker) refresh(w http.ResponseWriter, r *http.Request, form url.Values
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token was issued to another client")
 		return
 	}
-	if !resourceMatches(form["resource"], g.Resource) {
+	if !grantResourceMatches(form["resource"], g.Resource) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "the refresh token was issued for another resource")
 		return
 	}
@@ -917,12 +927,11 @@ func (b *Broker) issueTokens(w http.ResponseWriter, r *http.Request, g grant, re
 	refresh := g
 	refresh.ID = refreshID
 
-	accessToken, err := b.seal.seal(purposeAccess, accessTokenPrefix, access)
-	if err != nil {
-		log.WithContext(r.Context()).Errorf("seal MCP access token: %v", err)
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "")
+	accessToken, expires, ok := b.accessToken(w, r, access, now)
+	if !ok {
 		return false
 	}
+	access.Expires = expires
 	refreshToken, err := b.seal.seal(purposeRefresh, refreshTokenPrefix, refresh)
 	if err != nil {
 		log.WithContext(r.Context()).Errorf("seal MCP refresh token: %v", err)

@@ -174,9 +174,24 @@ class ToolPermissions(Middleware):
         return await call_next(context)
 ```
 
-How MCP clients connect: SSO is a browser cookie, which most MCP clients
-cannot do. Give agents an **API key** (dashboard: Authentication, HTTP
-Headers) or run them on a machine that is a **NetBird peer**. For example:
+How MCP clients connect with SSO: when the service has SSO and roles, and
+management runs its MCP OAuth broker (`NB_MCP_ENABLED=true`, with the embedded
+identity provider), MCP clients sign in themselves. Add the server with just its
+URL; the client opens your browser, you log in with SSO once, and from then on
+every call carries a short-lived token with your user and groups:
+
+```bash
+claude mcp add --transport http tickets https://tickets.example.com/mcp
+```
+
+The proxy answers the client's first call with a 401 that points to
+`https://tickets.example.com/.well-known/oauth-protected-resource`, which names
+management as the authorization server. Your MCP server sees the same JWT or
+headers as for a browser user, and does not implement any OAuth itself.
+
+Agents that cannot open a browser, such as CI jobs, use an **API key**
+(dashboard: Authentication, HTTP Headers) or run on a machine that is a
+**NetBird peer**. For example:
 
 ```bash
 claude mcp add --transport http tickets https://tickets.example.com/mcp \

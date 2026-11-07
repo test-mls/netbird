@@ -44,6 +44,7 @@ func (s *BaseServer) MCPBroker() *mcpapi.Broker {
 			Identity:       s.AuthManager(),
 			Accounts:       s.AccountManager(),
 			Limiter:        s.RateLimiter(),
+			Services:       s.ReverseProxyGRPCServer(),
 			BaseURL:        s.mcpBaseURL(),
 			TrustedProxies: s.Config.ReverseProxy.TrustedHTTPProxies,
 		})
@@ -54,8 +55,21 @@ func (s *BaseServer) MCPBroker() *mcpapi.Broker {
 		}
 		// Stop and a failed Start both run the stop handlers.
 		s.OnStop(broker.Close)
+		s.advertiseMCPBroker()
 		return broker
 	})
+}
+
+// advertiseMCPBroker lets reverse proxy services with SSO and roles send MCP clients to the
+// broker to sign in. Proxies need a fixed URL to advertise, so it only happens when the
+// deployment knows its own: without one the broker serves management's MCP endpoint only.
+func (s *BaseServer) advertiseMCPBroker() {
+	base := s.mcpBaseURL()
+	if base == "" {
+		log.Infof("MCP OAuth for reverse proxy services disabled: management's public URL is unknown")
+		return
+	}
+	s.ReverseProxyGRPCServer().SetMCPAuthorizationServer(base + mcpapi.AuthIssuerPath)
 }
 
 // closeGrantStore closes the Redis connection of a grant store no broker took over.

@@ -66,6 +66,26 @@ type DomainConfig struct {
 	AllowedGroups map[string]struct{}
 	// TargetResolver pins the target and access action used by this auth snapshot.
 	TargetResolver *proxy.TargetResolver
+	// MCPOAuthIssuer is the OAuth authorization server MCP clients sign in with.
+	// When set, the domain serves protected resource metadata, accepts bearer
+	// tokens the issuer minted with the session key, and answers non-browser
+	// clients without credentials with a 401 challenge instead of a redirect.
+	MCPOAuthIssuer string
+}
+
+// WithMCPOAuth lets MCP clients sign in to the domain through issuer.
+func WithMCPOAuth(issuer string) DomainOption {
+	return func(config *DomainConfig) error {
+		if issuer == "" {
+			return nil
+		}
+		u, err := url.Parse(issuer)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("MCP OAuth issuer %q must be an https URL", issuer)
+		}
+		config.MCPOAuthIssuer = issuer
+		return nil
+	}
 }
 
 // DomainOption configures a domain authentication snapshot.
@@ -153,6 +173,10 @@ func (mw *Middleware) Protect(next http.Handler) http.Handler {
 			return
 		}
 
+		if serveProtectedResourceMetadata(w, r, host, config) {
+			return
+		}
+
 		resolvedRequest, handled := mw.handleTargetAccess(w, r, config, next)
 		if handled {
 			return
@@ -179,6 +203,10 @@ func (mw *Middleware) Protect(next http.Handler) http.Handler {
 		}
 
 		if mw.forwardWithSessionCookie(w, r, host, config, next) {
+			return
+		}
+
+		if mw.forwardWithBearerToken(w, r, host, config, next) {
 			return
 		}
 
@@ -657,6 +685,11 @@ func (mw *Middleware) authenticateWithSchemes(w http.ResponseWriter, r *http.Req
 		if attemptedMethod != "" {
 			cd.SetAuthMethod(attemptedMethod)
 		}
+	}
+
+	if _, ok := methods[auth.MethodOIDC.String()]; ok && wantsOAuthChallenge(r, config) {
+		writeOAuthChallenge(w, r, host)
+		return
 	}
 
 	if oidcURL, ok := methods[auth.MethodOIDC.String()]; ok && len(methods) == 1 && oidcURL != "" {
