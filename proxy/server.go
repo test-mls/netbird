@@ -1296,12 +1296,15 @@ func (s *Server) proxyCapabilities() *proto.ProxyCapabilities {
 	privateCapability := s.Private
 	// Always true: this build enforces ProxyMapping.private via the auth middleware.
 	supportsPrivateService := true
+	// Always true: this build registers the app_authz middleware.
+	supportsAppAuthz := true
 	return &proto.ProxyCapabilities{
 		SupportsCustomPorts:    &s.SupportsCustomPorts,
 		RequireSubdomain:       &s.RequireSubdomain,
 		SupportsCrowdsec:       &supportsCrowdSec,
 		Private:                &privateCapability,
 		SupportsPrivateService: &supportsPrivateService,
+		SupportsAppAuthz:       &supportsAppAuthz,
 	}
 }
 

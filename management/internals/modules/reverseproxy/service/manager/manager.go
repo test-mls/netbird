@@ -333,6 +333,9 @@ func (m *Manager) persistNewService(ctx context.Context, accountID string, svc *
 	if err := validateTargetReferences(ctx, m.store, accountID, svc.Targets); err != nil {
 		return err
 	}
+	if err := validateAuthorizationGroups(ctx, m.store, accountID, svc); err != nil {
+		return err
+	}
 
 	if err := m.validatePrivateClusterTargets(ctx, svc.Targets, svc.ProxyCluster); err != nil {
 		return err
@@ -513,6 +516,9 @@ func (m *Manager) persistNewEphemeralService(ctx context.Context, accountID, pee
 	if err := validateTargetReferences(ctx, m.store, accountID, svc.Targets); err != nil {
 		return err
 	}
+	if err := validateAuthorizationGroups(ctx, m.store, accountID, svc); err != nil {
+		return err
+	}
 
 	if err := m.validatePrivateClusterTargets(ctx, svc.Targets, svc.ProxyCluster); err != nil {
 		return err
@@ -639,6 +645,9 @@ func (m *Manager) persistServiceUpdate(ctx context.Context, accountID string, se
 	customPorts := m.clusterCustomPorts(ctx, &svcForCaps)
 
 	if err := validateTargetReferences(ctx, m.store, accountID, service.Targets); err != nil {
+		return nil, err
+	}
+	if err := validateAuthorizationGroups(ctx, m.store, accountID, service); err != nil {
 		return nil, err
 	}
 

@@ -1027,6 +1027,9 @@ func isGroupLinkedToReverseProxyService(ctx context.Context, transaction store.S
 		if svc.Auth.BearerAuth != nil && svc.Auth.BearerAuth.Enabled && slices.Contains(svc.Auth.BearerAuth.DistributionGroups, groupID) {
 			return true, svc
 		}
+		if slices.Contains(svc.Auth.Authorization.GroupIDs(), groupID) {
+			return true, svc
+		}
 	}
 	return false, nil
 }

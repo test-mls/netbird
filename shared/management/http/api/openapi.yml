@@ -3157,6 +3157,72 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/HeaderAuthConfig'
+        authorization:
+          $ref: '#/components/schemas/ServiceAuthorizationConfig'
+    ServiceAuthorizationConfig:
+      type: object
+      description: Application authorization for an HTTP service. The proxy resolves roles from the caller's groups, can restrict which MCP tools each role may call, and forwards the identity upstream as headers or a signed JWT.
+      properties:
+        roles:
+          type: array
+          description: Role mappings. A caller gets every role whose groups include one of the caller's groups.
+          items:
+            $ref: '#/components/schemas/ServiceRoleMapping'
+        api_key_roles:
+          type: array
+          description: Roles granted to callers authenticated with header auth (API keys), which carry no groups. Each must name a role in roles.
+          items:
+            type: string
+            example: "agent"
+        enforce_mcp:
+          type: boolean
+          description: When true, the proxy denies MCP tools/call requests for tools the caller's roles do not grant.
+          example: true
+        forwarding:
+          type: string
+          description: How the identity reaches the upstream. headers adds X-NetBird-User-Id, X-NetBird-Roles and X-NetBird-Auth-Method; jwt adds a short-lived EdDSA JWT.
+          enum:
+            - headers
+            - jwt
+          example: "jwt"
+        jwt_header:
+          type: string
+          description: Header that carries the JWT in jwt mode. Defaults to X-NetBird-Identity.
+          enum:
+            - X-NetBird-Identity
+            - Authorization
+          example: "X-NetBird-Identity"
+        public_key_pem:
+          type: string
+          readOnly: true
+          description: PEM-encoded Ed25519 public key upstreams use to verify the JWT. Set in responses in jwt mode.
+        key_id:
+          type: string
+          readOnly: true
+          description: The kid header of JWTs signed for this service. Set in responses in jwt mode.
+      required:
+        - forwarding
+    ServiceRoleMapping:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Role name forwarded to the upstream
+          example: "admin"
+        groups:
+          type: array
+          description: Group IDs that grant this role
+          items:
+            type: string
+            example: "ch8i4ug6lnn4g9hqv7mg"
+        mcp_tools:
+          type: array
+          description: MCP tool names or glob patterns (* matches any characters) this role may call
+          items:
+            type: string
+            example: "list_*"
+      required:
+        - name
     HeaderAuthConfig:
       type: object
       description: Static header-value authentication. The proxy checks that the named header matches the configured value.

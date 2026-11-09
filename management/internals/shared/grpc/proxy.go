@@ -38,6 +38,7 @@ import (
 	"github.com/netbirdio/netbird/management/server/peer"
 	"github.com/netbirdio/netbird/management/server/types"
 	"github.com/netbirdio/netbird/management/server/users"
+	"github.com/netbirdio/netbird/proxy/appauthz"
 	proxyauth "github.com/netbirdio/netbird/proxy/auth"
 	"github.com/netbirdio/netbird/shared/hash/argon2id"
 	"github.com/netbirdio/netbird/shared/management/domain"
@@ -1205,12 +1206,32 @@ func proxyAcceptsMapping(conn *proxyConnection, mapping *proto.ProxyMapping) boo
 			return false
 		}
 	}
+	if mappingUsesAppAuthz(mapping) && !proxySupportsAppAuthz(conn.capabilities) {
+		return false
+	}
 	if mapping.ListenPort == 0 || mapping.Mode == "tls" {
 		return true
 	}
 	// Old proxies that never reported capabilities don't understand
 	// custom port mappings.
 	return conn.capabilities != nil && conn.capabilities.SupportsCustomPorts != nil
+}
+
+// mappingUsesAppAuthz reports whether any path of the mapping runs the
+// app_authz middleware.
+func mappingUsesAppAuthz(mapping *proto.ProxyMapping) bool {
+	for _, pm := range mapping.GetPath() {
+		for _, mw := range pm.GetOptions().GetMiddlewares() {
+			if mw.GetId() == appauthz.MiddlewareID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func proxySupportsAppAuthz(caps *proto.ProxyCapabilities) bool {
+	return caps != nil && caps.SupportsAppAuthz != nil && *caps.SupportsAppAuthz
 }
 
 // filterMappingsForProxy drops mappings the proxy cannot safely receive

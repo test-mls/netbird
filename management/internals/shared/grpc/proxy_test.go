@@ -17,6 +17,7 @@ import (
 	"github.com/netbirdio/netbird/management/internals/modules/reverseproxy/proxy"
 	nbcache "github.com/netbirdio/netbird/management/server/cache"
 	"github.com/netbirdio/netbird/management/server/types"
+	"github.com/netbirdio/netbird/proxy/appauthz"
 	"github.com/netbirdio/netbird/shared/management/proto"
 )
 
@@ -484,6 +485,40 @@ func TestSendServiceUpdateToCluster_FiltersOnCapability(t *testing.T) {
 	s.SendServiceUpdateToCluster(ctx, tcpMapping, cluster)
 
 	assert.NotNil(t, drainMapping(chNewNoCustom), "new proxy with SupportsCustomPorts=false should still receive mapping")
+}
+
+// TestSendServiceUpdateToCluster_AppAuthzNeedsCapability guards against an
+// older proxy forwarding a service unchecked: it drops the unknown app_authz
+// middleware, so a mapping that uses it must only reach proxies that claim it.
+func TestSendServiceUpdateToCluster_AppAuthzNeedsCapability(t *testing.T) {
+	tokenStore := NewOneTimeTokenStore(context.Background(), testCacheStore(t))
+	s := &ProxyServiceServer{tokenStore: tokenStore}
+	s.SetProxyController(newTestProxyController())
+
+	const cluster = "proxy.example.com"
+	chCapable := registerFakeProxyWithCaps(s, "proxy-capable", cluster, &proto.ProxyCapabilities{SupportsCustomPorts: ptr(true), SupportsAppAuthz: ptr(true)})
+	chOlder := registerFakeProxyWithCaps(s, "proxy-older", cluster, &proto.ProxyCapabilities{SupportsCustomPorts: ptr(true)})
+	chLegacy := registerFakeProxy(s, "proxy-legacy", cluster)
+
+	ctx := context.Background()
+	rolesMapping := &proto.ProxyMapping{
+		Type:      proto.ProxyMappingUpdateType_UPDATE_TYPE_CREATED,
+		Id:        "service-roles",
+		AccountId: "account-1",
+		Domain:    "tickets.example.com",
+		Path: []*proto.PathMapping{{Path: "/", Target: "http://10.0.0.1:80", Options: &proto.PathTargetOptions{
+			Middlewares: []*proto.MiddlewareConfig{{Id: appauthz.MiddlewareID, Enabled: true}},
+		}}},
+	}
+	s.SendServiceUpdateToCluster(ctx, rolesMapping, cluster)
+
+	assert.NotNil(t, drainMapping(chCapable), "a proxy that runs app_authz receives the mapping")
+	assert.Nil(t, drainMapping(chOlder), "a proxy without app_authz must not receive it")
+	assert.Nil(t, drainMapping(chLegacy), "a proxy that reports no capabilities must not receive it")
+
+	removed := &proto.ProxyMapping{Type: proto.ProxyMappingUpdateType_UPDATE_TYPE_REMOVED, Id: "service-roles", AccountId: "account-1", Domain: "tickets.example.com", Path: rolesMapping.Path}
+	s.SendServiceUpdateToCluster(ctx, removed, cluster)
+	assert.NotNil(t, drainMapping(chOlder), "removals still reach every proxy")
 }
 
 func TestSendServiceUpdateToCluster_TLSNotFiltered(t *testing.T) {

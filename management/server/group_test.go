@@ -34,6 +34,7 @@ import (
 	"github.com/netbirdio/netbird/management/server/settings"
 	"github.com/netbirdio/netbird/management/server/store"
 	"github.com/netbirdio/netbird/management/server/types"
+	"github.com/netbirdio/netbird/proxy/appauthz"
 	"github.com/netbirdio/netbird/route"
 	"github.com/netbirdio/netbird/shared/management/status"
 )
@@ -184,6 +185,11 @@ func TestDefaultAccountManager_DeleteGroup(t *testing.T) {
 		{
 			"reverse proxy bearer distribution group",
 			"grp-for-rp-bearer",
+			"reverse proxy service",
+		},
+		{
+			"reverse proxy role group",
+			"grp-for-rp-role",
 			"reverse proxy service",
 		},
 	}
@@ -585,6 +591,14 @@ func initTestGroupAccount(am *DefaultAccountManager) (*DefaultAccountManager, *t
 		Peers:     make([]string, 0),
 	}
 
+	groupForRPRole := &types.Group{
+		ID:        "grp-for-rp-role",
+		AccountID: "account-id",
+		Name:      "Group mapped to a reverse proxy service role",
+		Issued:    types.GroupIssuedAPI,
+		Peers:     make([]string, 0),
+	}
+
 	routeResource := &route.Route{
 		ID:     "example route",
 		Groups: []string{groupForRoute.ID},
@@ -644,6 +658,7 @@ func initTestGroupAccount(am *DefaultAccountManager) (*DefaultAccountManager, *t
 	_ = am.CreateGroup(context.Background(), accountID, groupAdminUserID, groupForAgentNetworkBudgetRule)
 	_ = am.CreateGroup(context.Background(), accountID, groupAdminUserID, groupForRPPrivate)
 	_ = am.CreateGroup(context.Background(), accountID, groupAdminUserID, groupForRPBearer)
+	_ = am.CreateGroup(context.Background(), accountID, groupAdminUserID, groupForRPRole)
 
 	agentNetworkPolicy := &agentNetworkTypes.Policy{
 		ID:           "example agent network policy",
@@ -706,6 +721,17 @@ func initTestGroupAccount(am *DefaultAccountManager) (*DefaultAccountManager, *t
 				BearerAuth: &rpservice.BearerAuthConfig{
 					Enabled:            true,
 					DistributionGroups: []string{groupForRPBearer.ID},
+				},
+			},
+		},
+		{
+			ID:        "rp-svc-role",
+			AccountID: accountID,
+			Domain:    "role.services.example.com",
+			Auth: rpservice.AuthConfig{
+				Authorization: &rpservice.AuthorizationConfig{
+					Roles:      []appauthz.Role{{Name: "viewer", Groups: []string{groupForRPRole.ID}}},
+					Forwarding: appauthz.ForwardHeaders,
 				},
 			},
 		},
