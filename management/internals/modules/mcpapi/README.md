@@ -52,6 +52,7 @@ its own route.
 | --- | --- |
 | `NB_MCP_ENABLED` | A true value (`strconv.ParseBool`) mounts `/api/mcp` and, when it can start, the broker. Unset, false or unparseable leaves both off; an unparseable value is logged. |
 | `NB_MCP_TOOLS` | Optional comma-separated tool allowlist. Empty exposes the whole catalog. An unknown name stops management at boot. |
+| `NB_MCP_BASE_URL` | Optional scheme and host clients reach management at, such as `https://netbird.example.com`. It fixes the broker's issuer, resource and callback, and lets reverse proxy services advertise the broker for MCP sign-in. Without it the embedded IdP's URL is used; without either, only management's own endpoint takes MCP sign-in. |
 | `NB_MCP_OAUTH_KEY` | Optional secret of at least 32 bytes that seals the broker's codes and tokens. See [Keys](#keys). |
 | `NB_CACHE_REDIS_ADDRESS` | Management's existing shared cache address. When set, broker grants live there. See [Grants](#grants). |
 
@@ -292,6 +293,32 @@ agents can present (`ClientCertPath`): the broker presents none.
 - A proxy on the same host may connect over `127.0.0.1` and forward the public `Host`.
   The MCP SDK's DNS rebinding check would refuse that with 403, so it is off: every
   call carries its credential in a header, which a rebound page cannot obtain.
+
+## Reverse proxy services
+
+The broker also signs MCP clients in to reverse proxy services, so an MCP server behind
+the NetBird proxy needs no OAuth of its own.
+
+- A service qualifies when it is an enabled HTTP service with SSO and an authorization
+  block (roles). Its mapping then carries the broker's issuer, and the proxy serves
+  `/.well-known/oauth-protected-resource` on the service domain naming it, and answers
+  non-browser requests without credentials with a 401 challenge instead of the SSO
+  redirect. Browsers still get the redirect.
+- The proxy needs a fixed issuer URL to advertise, so this is on only when management
+  knows its public URL: `NB_MCP_BASE_URL`, or the embedded IdP (`advertiseMCPBroker`).
+- `authorize` accepts a `resource` of `https://<service domain>` with any path, when
+  `ServiceTokens.ServiceAcceptsBrokerTokens` says the domain qualifies. It is stored as
+  `https://<domain>`, and the code and refresh token stay bound to that domain. Read and
+  write scopes do not apply; the consent page names the service instead.
+- The access token is not sealed: it is signed with the service's key, minted by the
+  proxy service with the same account, user status and SSO group checks as a browser
+  login, and valid for 15 minutes. It carries `use: "mcp"`, which session cookies never
+  do: the proxy accepts it only as a bearer token, never as a cookie, and refuses a
+  session cookie sent as a bearer token. It is stripped before forwarding. The proxy cannot see revocations, so the short
+  lifetime bounds how long a revoked session keeps working; every refresh re-checks the
+  user and the service's groups.
+- A service token is never accepted on `/api/mcp`, and a management token is never
+  accepted by a service: neither verifies as the other.
 
 ## Tenant URLs
 

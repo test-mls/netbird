@@ -19,11 +19,31 @@ const (
 	// unless it is set to a true value.
 	EnvEnabled = "NB_MCP_ENABLED"
 
+	// EnvBaseURL is the scheme and host clients reach management at, such as
+	// https://netbird.example.com. It fixes the broker's issuer and lets reverse
+	// proxy services advertise the broker, which otherwise needs the embedded IdP.
+	EnvBaseURL = "NB_MCP_BASE_URL"
+
 	// Path is where the MCP endpoint is mounted, relative to the API router.
 	Path = "/mcp"
 
 	serverTitle = "NetBird Management"
 )
+
+// BaseURLFromEnv returns NB_MCP_BASE_URL normalised to scheme and host, or ""
+// when it is unset. A value that is not a scheme and host is logged and ignored.
+func BaseURLFromEnv() string {
+	raw := os.Getenv(EnvBaseURL)
+	if raw == "" {
+		return ""
+	}
+	base, err := parseBaseURL(raw)
+	if err != nil {
+		log.Warnf("ignoring %s: %v", EnvBaseURL, err)
+		return ""
+	}
+	return base
+}
 
 // EnabledByEnv reports whether NB_MCP_ENABLED asks for the endpoint. An unparseable value is
 // logged and treated as off.

@@ -35,6 +35,9 @@ type OIDCValidationConfig struct {
 	Audiences          []string
 	KeysLocation       string
 	MaxTokenAgeSeconds int64
+	// MCPAuthorizationServer is the issuer URL of management's MCP OAuth broker,
+	// empty when the broker is off or its public URL is unknown.
+	MCPAuthorizationServer string
 }
 
 // Controller is responsible for managing proxy clusters and routing service updates.

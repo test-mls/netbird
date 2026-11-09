@@ -27,9 +27,12 @@ type consentPage struct {
 	RedirectHost   string
 	Loopback       bool
 	WriteRequested bool
-	Request        string
-	Action         string
-	Nonce          string
+	// Service is the domain of the reverse proxy service the client signs in to, empty for
+	// management's own MCP endpoint.
+	Service string
+	Request string
+	Action  string
+	Nonce   string
 }
 
 // pageHeaders keep the pages out of caches and frames, so the consent buttons cannot be

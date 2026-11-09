@@ -6,8 +6,10 @@
 {{define "client"}}{{with .ClientName}}<span class="nb-client">“<bdi>{{.}}</bdi>”</span>{{else}}an unnamed application{{end}}{{end}}
 
 {{define "content"}}
-<h1 class="nb-heading">Allow {{template "client" .}} to access NetBird?</h1>
-<p class="nb-subheading">It will be able to use the NetBird management API as you, limited to what your role allows.</p>
+{{if .Service}}<h1 class="nb-heading">Allow {{template "client" .}} to access <span class="nb-client">{{.Service}}</span>?</h1>
+<p class="nb-subheading">It will reach this service as you, with the roles and tools your NetBird groups give you.</p>
+{{else}}<h1 class="nb-heading">Allow {{template "client" .}} to access NetBird?</h1>
+<p class="nb-subheading">It will be able to use the NetBird management API as you, limited to what your role allows.</p>{{end}}
 <div class="nb-panel">
 <span class="nb-label nb-panel-label">After you sign in you will be sent back to</span>
 <span class="nb-host">{{.RedirectHost}}</span>
@@ -19,7 +21,7 @@
      makes a stray Enter deny. It is hidden with visibility, not display:none, because
      older WebKit skipped a default button that was not rendered. */}}
 <button type="submit" name="action" value="deny" class="nb-default" tabindex="-1"></button>
-<fieldset>
+{{if not .Service}}<fieldset>
 <legend class="nb-label">Permissions</legend>
 <label class="nb-perm nb-perm-fixed">
 <span class="nb-check"><input type="checkbox" checked disabled>{{template "tick"}}</span>
@@ -29,7 +31,7 @@
 <span class="nb-check"><input type="checkbox" name="write" value="on">{{template "tick"}}</span>
 <span><span class="nb-perm-title">Make changes</span><span class="nb-perm-desc">Create, update and delete</span></span>
 </label>{{end}}
-</fieldset>
+</fieldset>{{end}}
 <div class="nb-actions">
 <button type="submit" name="action" value="approve" class="nb-btn" id="approve">Continue to sign in</button>
 <button type="submit" name="action" value="deny" class="nb-btn nb-btn-secondary">Cancel</button>

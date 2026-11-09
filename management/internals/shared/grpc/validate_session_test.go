@@ -840,3 +840,38 @@ func TestValidateSession_EmailResolution(t *testing.T) {
 		})
 	}
 }
+
+// TestIssueServiceToken covers the MCP broker's path: it only signs for SSO services with
+// roles, keeps the browser session's account and group checks, and issues short tokens.
+func TestIssueServiceToken(t *testing.T) {
+	setup := setupValidateSessionTest(t)
+	defer setup.cleanup()
+	ctx := context.Background()
+	const domain = "restricted-proxy.example.com"
+
+	assert.False(t, setup.proxyService.ServiceAcceptsBrokerTokens(ctx, domain), "no roles configured, so no MCP sign-in")
+	_, err := setup.proxyService.IssueServiceToken(ctx, domain, "allowedUserId", 15*time.Minute)
+	require.Error(t, err, "a service without roles gets no broker token")
+
+	svc, err := setup.store.GetServiceByID(ctx, store.LockingStrengthNone, "testAccountId", "restrictedProxyId")
+	require.NoError(t, err)
+	svc.Enabled = true
+	svc.Auth.Authorization = &service.AuthorizationConfig{Forwarding: "headers"}
+	require.NoError(t, setup.store.UpdateService(ctx, svc))
+	require.True(t, setup.proxyService.ServiceAcceptsBrokerTokens(ctx, domain))
+
+	token, err := setup.proxyService.IssueServiceToken(ctx, domain, "allowedUserId", 15*time.Minute)
+	require.NoError(t, err)
+	pubKey, err := base64.StdEncoding.DecodeString(svc.SessionPublicKey)
+	require.NoError(t, err)
+	userID, _, method, groups, _, err := auth.ValidateMCPAccessJWT(token, domain, pubKey)
+	require.NoError(t, err, "the proxy verifies it as an MCP bearer token")
+	_, _, _, _, _, err = auth.ValidateSessionJWT(token, domain, pubKey)
+	assert.Error(t, err, "an MCP access token is never accepted as a session cookie")
+	assert.Equal(t, "allowedUserId", userID)
+	assert.Equal(t, auth.MethodOIDC.String(), method)
+	assert.Equal(t, []string{"allowedGroupId"}, groups)
+
+	_, err = setup.proxyService.IssueServiceToken(ctx, domain, "nonGroupUserId", 15*time.Minute)
+	assert.ErrorIs(t, err, ErrUserNotInGroup, "a user outside the SSO groups gets no token")
+}

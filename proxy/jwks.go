@@ -108,6 +108,23 @@ func jwksForMapping(mapping *proto.ProxyMapping) []byte {
 	return doc
 }
 
+// mcpOAuthIssuer returns the OAuth authorization server MCP clients sign in to the
+// mapping's domain with, or "" when its app_authz middleware names none.
+func mcpOAuthIssuer(mapping *proto.ProxyMapping) string {
+	for _, pm := range mapping.GetPath() {
+		for _, mw := range pm.GetOptions().GetMiddlewares() {
+			if mw.GetId() != appauthz.MiddlewareID || !mw.GetEnabled() {
+				continue
+			}
+			var cfg appauthz.Config
+			if err := json.Unmarshal(mw.GetConfigJson(), &cfg); err == nil && cfg.OAuthIssuer != "" {
+				return cfg.OAuthIssuer
+			}
+		}
+	}
+	return ""
+}
+
 func signingJWK(raw []byte) (appauthz.JWK, bool) {
 	var cfg appauthz.Config
 	if err := json.Unmarshal(raw, &cfg); err != nil {

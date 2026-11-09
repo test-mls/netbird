@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -141,6 +142,9 @@ type ProxyServiceServer struct {
 
 	// OIDC configuration for proxy authentication
 	oidcConfig ProxyOIDCConfig
+	// mcpAuthServer is the issuer URL of the MCP OAuth broker, set at boot once
+	// the broker runs. Proxies advertise it on SSO services with roles.
+	mcpAuthServer atomic.Pointer[string]
 
 	// singleUseStore backs both PKCE verifiers and OIDC session exchange codes.
 	singleUseStore *SingleUseStore
@@ -1682,11 +1686,25 @@ func (s *ProxyServiceServer) GetOIDCConfig() ProxyOIDCConfig {
 // in the format needed by ToProtoMapping.
 func (s *ProxyServiceServer) GetOIDCValidationConfig() proxy.OIDCValidationConfig {
 	return proxy.OIDCValidationConfig{
-		Issuer:             s.oidcConfig.Issuer,
-		Audiences:          []string{s.oidcConfig.Audience},
-		KeysLocation:       s.oidcConfig.KeysLocation,
-		MaxTokenAgeSeconds: 0, // No max token age by default
+		Issuer:                 s.oidcConfig.Issuer,
+		Audiences:              []string{s.oidcConfig.Audience},
+		KeysLocation:           s.oidcConfig.KeysLocation,
+		MaxTokenAgeSeconds:     0, // No max token age by default
+		MCPAuthorizationServer: s.mcpAuthorizationServer(),
 	}
+}
+
+// SetMCPAuthorizationServer records the issuer URL of management's MCP OAuth
+// broker, so service mappings sent from now on let MCP clients sign in with it.
+func (s *ProxyServiceServer) SetMCPAuthorizationServer(issuer string) {
+	s.mcpAuthServer.Store(&issuer)
+}
+
+func (s *ProxyServiceServer) mcpAuthorizationServer() string {
+	if v := s.mcpAuthServer.Load(); v != nil {
+		return *v
+	}
+	return ""
 }
 
 func (s *ProxyServiceServer) generateHMAC(input string) string {
@@ -1827,6 +1845,35 @@ func (s *ProxyServiceServer) idpEmail(ctx context.Context, accountID, userID str
 // token is a bearer credential for the service, so authorisation has to run
 // before it is signed rather than only when the proxy presents it back.
 func (s *ProxyServiceServer) GenerateSessionToken(ctx context.Context, domain, userID string, method proxyauth.Method) (string, error) {
+	return s.signSessionToken(ctx, domain, userID, method, proxyauth.DefaultSessionExpiry, false)
+}
+
+// ServiceAcceptsBrokerTokens reports whether domain is a reverse proxy service
+// MCP clients may sign in to through the MCP OAuth broker.
+func (s *ProxyServiceServer) ServiceAcceptsBrokerTokens(ctx context.Context, domain string) bool {
+	service, err := s.serviceManager.GetServiceByDomain(ctx, domain)
+	if err != nil || service == nil {
+		return false
+	}
+	return service.AcceptsBrokerTokens()
+}
+
+// IssueServiceToken signs a short-lived access token for an MCP client of the
+// service at domain, with the same account, user status and group checks as a
+// browser session. The proxy verifies it like a session cookie.
+func (s *ProxyServiceServer) IssueServiceToken(ctx context.Context, domain, userID string, ttl time.Duration) (string, error) {
+	if !s.ServiceAcceptsBrokerTokens(ctx, domain) {
+		return "", fmt.Errorf("service %s does not accept MCP broker tokens", domain)
+	}
+	return s.signSessionToken(ctx, domain, userID, proxyauth.MethodOIDC, ttl, true)
+}
+
+// signSessionToken checks the user may reach the service and signs a token
+// with the service key: a browser session token, or with mcpAccess an MCP
+// access token the proxy accepts only as a bearer token. Browser logins are
+// recorded in the activity log; the broker records its own sign-ins, and its
+// refreshes are not logins.
+func (s *ProxyServiceServer) signSessionToken(ctx context.Context, domain, userID string, method proxyauth.Method, ttl time.Duration, mcpAccess bool) (string, error) {
 	service, err := s.getServiceByDomain(ctx, domain)
 	if err != nil {
 		return "", fmt.Errorf("service not found for domain %s: %w", domain, err)
@@ -1871,22 +1918,16 @@ func (s *ProxyServiceServer) GenerateSessionToken(ctx context.Context, domain, u
 
 	groupIDs, groupNames := pairGroupIDsAndNames(userGroups)
 
-	token, err := sessionkey.SignToken(
-		service.SessionPrivateKey,
-		userID,
-		s.resolveUserEmail(ctx, service.AccountID, user, ""),
-		domain,
-		method,
-		groupIDs,
-		groupNames,
-		proxyauth.DefaultSessionExpiry,
-	)
+	email := s.resolveUserEmail(ctx, service.AccountID, user, "")
+	if mcpAccess {
+		return sessionkey.SignMCPAccessToken(service.SessionPrivateKey, userID, email, domain, groupIDs, groupNames, ttl)
+	}
+
+	token, err := sessionkey.SignToken(service.SessionPrivateKey, userID, email, domain, method, groupIDs, groupNames, ttl)
 	if err != nil {
 		return "", err
 	}
-
 	s.recordUserLogin(ctx, service.AccountID, user)
-
 	return token, nil
 }
 

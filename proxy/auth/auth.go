@@ -28,6 +28,9 @@ const (
 	SessionCookieName    = "nb_session"
 	DefaultSessionExpiry = 24 * time.Hour
 	SessionJWTIssuer     = "netbird-management"
+	// TokenUseMCP marks a token the MCP OAuth broker issued for an MCP client.
+	// Session cookies carry no use claim, so neither can stand in for the other.
+	TokenUseMCP = "mcp"
 )
 
 // Query parameters management uses to hand the OIDC session to the proxy. The
@@ -65,6 +68,20 @@ func ResolveProto(forwardedProto string, conn *tls.ConnectionState) string {
 // groups, and groupNames may be empty for tokens minted before those
 // claims were introduced. groupNames pairs positionally with groups.
 func ValidateSessionJWT(tokenString, domain string, publicKey ed25519.PublicKey) (userID, email, method string, groups, groupNames []string, err error) {
+	return validateJWT(tokenString, domain, publicKey, "")
+}
+
+// ValidateMCPAccessJWT validates a token the MCP OAuth broker issued for an
+// MCP client of domain. It returns the same values as ValidateSessionJWT and
+// refuses session tokens, which carry no use claim.
+func ValidateMCPAccessJWT(tokenString, domain string, publicKey ed25519.PublicKey) (userID, email, method string, groups, groupNames []string, err error) {
+	return validateJWT(tokenString, domain, publicKey, TokenUseMCP)
+}
+
+// validateJWT checks a token signed with a service key. use must match the
+// token's use claim exactly, so a broker token is never accepted as a session
+// cookie and a session cookie is never accepted as a broker bearer token.
+func validateJWT(tokenString, domain string, publicKey ed25519.PublicKey, use string) (userID, email, method string, groups, groupNames []string, err error) {
 	if publicKey == nil {
 		return "", "", "", nil, nil, fmt.Errorf("no public key configured for domain")
 	}
@@ -87,6 +104,10 @@ func ValidateSessionJWT(tokenString, domain string, publicKey ed25519.PublicKey)
 	sub, _ := claims.GetSubject()
 	if sub == "" {
 		return "", "", "", nil, nil, fmt.Errorf("missing subject claim")
+	}
+
+	if tokenUse, _ := claims["use"].(string); tokenUse != use {
+		return "", "", "", nil, nil, fmt.Errorf("token use %q is not accepted here", tokenUse)
 	}
 
 	methodClaim, _ := claims["method"].(string)

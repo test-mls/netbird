@@ -34,6 +34,9 @@ type Claims struct {
 	// shorter than Groups for tokens minted before names were
 	// resolvable; the consumer falls back to ids for missing positions.
 	GroupNames []string `json:"group_names,omitempty"`
+	// Use is empty for session tokens and auth.TokenUseMCP for tokens the
+	// MCP OAuth broker issues. The proxy accepts each only where it belongs.
+	Use string `json:"use,omitempty"`
 }
 
 func GenerateKeyPair() (*KeyPair, error) {
@@ -55,6 +58,17 @@ func GenerateKeyPair() (*KeyPair, error) {
 // pairs positionally with groups; pass nil when names couldn't be
 // resolved.
 func SignToken(privKeyB64, userID, email, domain string, method auth.Method, groups, groupNames []string, expiration time.Duration) (string, error) {
+	return signToken(privKeyB64, userID, email, domain, method, groups, groupNames, expiration, "")
+}
+
+// SignMCPAccessToken mints an access token for an MCP client of domain. It
+// carries the same claims as a session token plus use=auth.TokenUseMCP, so the
+// proxy accepts it only as a bearer token and never as a session cookie.
+func SignMCPAccessToken(privKeyB64, userID, email, domain string, groups, groupNames []string, expiration time.Duration) (string, error) {
+	return signToken(privKeyB64, userID, email, domain, auth.MethodOIDC, groups, groupNames, expiration, auth.TokenUseMCP)
+}
+
+func signToken(privKeyB64, userID, email, domain string, method auth.Method, groups, groupNames []string, expiration time.Duration, use string) (string, error) {
 	privKeyBytes, err := base64.StdEncoding.DecodeString(privKeyB64)
 	if err != nil {
 		return "", fmt.Errorf("decode private key: %w", err)
@@ -80,6 +94,7 @@ func SignToken(privKeyB64, userID, email, domain string, method auth.Method, gro
 		Email:      email,
 		Groups:     append([]string(nil), groups...),
 		GroupNames: append([]string(nil), groupNames...),
+		Use:        use,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)

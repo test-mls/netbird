@@ -82,6 +82,11 @@ type Config struct {
 	APIKeyRoles []string   `json:"api_key_roles,omitempty"`
 	EnforceMCP  bool       `json:"enforce_mcp,omitempty"`
 	Forwarding  Forwarding `json:"forwarding"`
+	// OAuthIssuer is the OAuth 2.1 authorization server MCP clients sign in
+	// with, set when the service uses SSO and management runs its MCP broker.
+	// The proxy then serves protected resource metadata, accepts the broker's
+	// bearer tokens and answers non-browser clients with a 401 challenge.
+	OAuthIssuer string `json:"oauth_issuer,omitempty"`
 }
 
 // ResolveRoles returns the role names granted to a caller, in config order.

@@ -98,6 +98,14 @@ func (s *Service) validateAuthorization() error {
 	return nil
 }
 
+// AcceptsBrokerTokens reports whether MCP clients may sign in to the service
+// through management's OAuth broker: an HTTP service with SSO and an
+// authorization block. The broker refuses every other service as a resource.
+func (s *Service) AcceptsBrokerTokens() bool {
+	return s.Enabled && (s.Mode == "" || s.Mode == ModeHTTP) && !s.Private &&
+		s.Auth.BearerAuth != nil && s.Auth.BearerAuth.Enabled && s.Auth.Authorization != nil
+}
+
 // upstreamSigningKey derives the key that signs upstream identity JWTs.
 func (s *Service) upstreamSigningKey() (ed25519.PrivateKey, error) {
 	if s.SessionPrivateKey == "" {
@@ -110,12 +118,17 @@ func (s *Service) upstreamSigningKey() (ed25519.PrivateKey, error) {
 // nil when the service has no authorization block. In jwt mode a key that
 // cannot be derived is left out on purpose: the proxy then refuses to build
 // the middleware and serves the target as unavailable rather than unchecked.
-func (s *Service) appAuthzMiddleware() *proto.MiddlewareConfig {
+// mcpAuthorizationServer, when set, lets MCP clients sign in to an SSO service
+// through management's OAuth broker.
+func (s *Service) appAuthzMiddleware(mcpAuthorizationServer string) *proto.MiddlewareConfig {
 	a := s.Auth.Authorization
 	if a == nil {
 		return nil
 	}
 	cfg := a.baseConfig()
+	if s.AcceptsBrokerTokens() {
+		cfg.OAuthIssuer = mcpAuthorizationServer
+	}
 	if a.Forwarding == appauthz.ForwardJWT {
 		cfg.Forwarding.Issuer = "https://" + s.Domain
 		cfg.Forwarding.Audience = s.Domain
