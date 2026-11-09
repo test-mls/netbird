@@ -47,6 +47,7 @@ const (
 	HeaderRoles      = "X-NetBird-Roles"
 	HeaderAuthMethod = "X-NetBird-Auth-Method"
 	HeaderIdentity   = "X-NetBird-Identity"
+	HeaderMCPTools   = "X-NetBird-MCP-Tools"
 	HeaderAuthorize  = "Authorization"
 )
 
@@ -79,6 +80,7 @@ type Forwarding struct {
 type Config struct {
 	Roles       []Role     `json:"roles,omitempty"`
 	APIKeyRoles []string   `json:"api_key_roles,omitempty"`
+	EnforceMCP  bool       `json:"enforce_mcp,omitempty"`
 	Forwarding  Forwarding `json:"forwarding"`
 }
 

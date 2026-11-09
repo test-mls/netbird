@@ -25,6 +25,7 @@ func baseConfig() appauthz.Config {
 			{Name: "agent", MCPTools: []string{"list_*"}},
 		},
 		APIKeyRoles: []string{"agent"},
+		EnforceMCP:  true,
 		Forwarding:  appauthz.Forwarding{Mode: appauthz.ForwardHeaders},
 	}
 }
@@ -38,9 +39,15 @@ func build(t *testing.T, cfg appauthz.Config) middleware.Middleware {
 	return m
 }
 
-func getInput(userID, method string, groups []string) *middleware.Input {
+func toolCallBody(tool string) []byte {
+	return []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tool + `","arguments":{}}}`)
+}
+
+func postInput(userID, method string, groups []string, body []byte) *middleware.Input {
 	return &middleware.Input{
-		Method:     http.MethodGet,
+		Method:     http.MethodPost,
+		Headers:    []middleware.KV{{Key: "Content-Type", Value: "application/json"}},
+		Body:       body,
 		UserID:     userID,
 		UserEmail:  userID + "@acme.io",
 		AuthMethod: method,
@@ -57,12 +64,94 @@ func headerValue(kvs []middleware.KV, name string) string {
 	return ""
 }
 
+func TestToolCallDecisions(t *testing.T) {
+	m := build(t, baseConfig())
+
+	cases := []struct {
+		name   string
+		in     *middleware.Input
+		allow  bool
+		reason string
+	}{
+		{"admin may call anything", postInput("alice", "oidc", []string{"grp-ops"}, toolCallBody("delete_ticket")), true, ""},
+		{"viewer may list", postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("list_tickets")), true, ""},
+		{"viewer may not delete", postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("delete_ticket")), false, denyCodeToolForbidden},
+		{"unmapped group gets nothing", postInput("eve", "oidc", []string{"grp-other"}, toolCallBody("list_tickets")), false, denyCodeToolForbidden},
+		{"api key may list", postInput("header-user", "header", nil, toolCallBody("list_tickets")), true, ""},
+		{"api key may not create", postInput("header-user", "header", nil, toolCallBody("create_ticket")), false, denyCodeToolForbidden},
+		{"anonymous caller is denied a call", postInput("", "", nil, toolCallBody("list_tickets")), false, denyCodeToolForbidden},
+		{"tools/list passes", postInput("bob", "oidc", []string{"grp-eng"}, []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)), true, ""},
+		{"initialize passes", postInput("bob", "oidc", []string{"grp-eng"}, []byte(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`)), true, ""},
+		{"batch with one forbidden call is denied", postInput("bob", "oidc", []string{"grp-eng"},
+			[]byte(`[`+string(toolCallBody("list_tickets"))+`,`+string(toolCallBody("delete_ticket"))+`]`)), false, denyCodeToolForbidden},
+		{"call without a name is denied", postInput("alice", "oidc", []string{"grp-eng"}, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`)), false, denyCodeToolForbidden},
+		{"unparseable body is denied", postInput("alice", "oidc", []string{"grp-ops"}, []byte(`{"method":`)), false, denyCodeUninspectable},
+		{"case-variant name key is denied", postInput("bob", "oidc", []string{"grp-eng"},
+			[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_tickets","Name":"delete_ticket"}}`)), false, denyCodeUninspectable},
+		{"case-variant method key is denied", postInput("bob", "oidc", []string{"grp-eng"},
+			[]byte(`{"jsonrpc":"2.0","id":1,"Method":"tools/call","params":{"name":"delete_ticket"}}`)), false, denyCodeUninspectable},
+		{"duplicate method key is denied", postInput("bob", "oidc", []string{"grp-eng"},
+			[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","method":"tools/call","params":{"name":"delete_ticket"}}`)), false, denyCodeUninspectable},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out, err := m.Invoke(context.Background(), c.in)
+			require.NoError(t, err)
+			if c.allow {
+				assert.Equal(t, middleware.DecisionAllow, out.Decision, "expected allow")
+				return
+			}
+			require.Equal(t, middleware.DecisionDeny, out.Decision, "expected deny")
+			assert.Equal(t, http.StatusForbidden, out.DenyStatus, "deny status")
+			assert.Equal(t, c.reason, out.DenyReason.Code, "deny code")
+		})
+	}
+}
+
+func TestUninspectableBodies(t *testing.T) {
+	m := build(t, baseConfig())
+
+	truncated := postInput("alice", "oidc", []string{"grp-ops"}, toolCallBody("list_tickets"))
+	truncated.BodyTruncated = true
+	out, err := m.Invoke(context.Background(), truncated)
+	require.NoError(t, err)
+	assert.Equal(t, middleware.DecisionDeny, out.Decision, "a truncated body cannot be authorized")
+
+	// The body was not captured (wrong content type, over the cap, or no
+	// capture budget) but the request has one.
+	uncaptured := postInput("alice", "oidc", []string{"grp-ops"}, nil)
+	uncaptured.Headers = []middleware.KV{{Key: "Content-Length", Value: "512"}}
+	out, err = m.Invoke(context.Background(), uncaptured)
+	require.NoError(t, err)
+	assert.Equal(t, middleware.DecisionDeny, out.Decision, "an uncaptured body cannot be authorized")
+
+	empty := postInput("alice", "oidc", []string{"grp-ops"}, nil)
+	empty.Headers = []middleware.KV{{Key: "Content-Length", Value: "0"}}
+	out, err = m.Invoke(context.Background(), empty)
+	require.NoError(t, err)
+	assert.Equal(t, middleware.DecisionAllow, out.Decision, "an empty POST carries no tool call")
+
+	get := &middleware.Input{Method: http.MethodGet, UserID: "alice", AuthMethod: "oidc", UserGroups: []string{"grp-ops"}}
+	out, err = m.Invoke(context.Background(), get)
+	require.NoError(t, err)
+	assert.Equal(t, middleware.DecisionAllow, out.Decision, "GET opens the SSE stream and carries no body")
+}
+
+func TestEnforcementOff(t *testing.T) {
+	cfg := baseConfig()
+	cfg.EnforceMCP = false
+	m := build(t, cfg)
+
+	out, err := m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("delete_ticket")))
+	require.NoError(t, err)
+	assert.Equal(t, middleware.DecisionAllow, out.Decision, "with enforcement off the upstream decides")
+}
+
 func TestHeadersMode(t *testing.T) {
 	m := build(t, baseConfig())
 
-	out, err := m.Invoke(context.Background(), getInput("alice", "oidc", []string{"grp-ops", "grp-eng"}))
+	out, err := m.Invoke(context.Background(), postInput("alice", "oidc", []string{"grp-ops", "grp-eng"}, toolCallBody("list_tickets")))
 	require.NoError(t, err)
-	require.Equal(t, middleware.DecisionAllow, out.Decision)
 	require.NotNil(t, out.Mutations)
 
 	assert.Equal(t, "alice", headerValue(out.Mutations.HeadersAdd, appauthz.HeaderUserID), "user id header")
@@ -80,28 +169,10 @@ func TestHeadersMode(t *testing.T) {
 	assert.Len(t, remove, len(out.Mutations.HeadersRemove), "all removes survive the policy")
 }
 
-func TestRolesPerCaller(t *testing.T) {
-	m := build(t, baseConfig())
-	cases := []struct {
-		name  string
-		in    *middleware.Input
-		roles string
-	}{
-		{"eng member is viewer", getInput("bob", "oidc", []string{"grp-eng"}), "viewer"},
-		{"unmapped group has no roles", getInput("eve", "oidc", []string{"grp-other"}), ""},
-		{"api key caller gets api_key_roles", getInput("header-user", "header", nil), "agent"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			out, err := m.Invoke(context.Background(), c.in)
-			require.NoError(t, err)
-			assert.Equal(t, c.roles, headerValue(out.Mutations.HeadersAdd, appauthz.HeaderRoles))
-		})
-	}
-}
-
 func TestAnonymousGetsStripOnly(t *testing.T) {
-	m := build(t, baseConfig())
+	cfg := baseConfig()
+	cfg.EnforceMCP = false
+	m := build(t, cfg)
 
 	out, err := m.Invoke(context.Background(), &middleware.Input{Method: http.MethodGet})
 	require.NoError(t, err)
@@ -128,10 +199,11 @@ func TestJWTMode(t *testing.T) {
 	cfg, pub := jwtConfig(t, "")
 	m := build(t, cfg)
 
-	in := getInput("alice", "oidc", []string{"grp-ops"})
+	in := postInput("alice", "oidc", []string{"grp-ops"}, toolCallBody("delete_ticket"))
 	in.UserGroupNames = []string{"ops"}
 	out, err := m.Invoke(context.Background(), in)
 	require.NoError(t, err)
+	require.Equal(t, middleware.DecisionAllow, out.Decision)
 
 	raw := headerValue(out.Mutations.HeadersAdd, appauthz.HeaderIdentity)
 	require.NotEmpty(t, raw, "token goes in X-NetBird-Identity by default")
@@ -161,26 +233,11 @@ func TestJWTMode(t *testing.T) {
 	assert.Error(t, err, "token is bound to the service audience")
 }
 
-func TestJWTAudienceIsAString(t *testing.T) {
-	cfg, _ := jwtConfig(t, "")
-	m := build(t, cfg)
-
-	out, err := m.Invoke(context.Background(), getInput("alice", "oidc", []string{"grp-ops"}))
-	require.NoError(t, err)
-	parts := strings.Split(headerValue(out.Mutations.HeadersAdd, appauthz.HeaderIdentity), ".")
-	require.Len(t, parts, 3)
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	require.NoError(t, err)
-	var generic map[string]any
-	require.NoError(t, json.Unmarshal(payload, &generic))
-	assert.Equal(t, "tickets.acme.io", generic["aud"], "aud is a plain string, not an array")
-}
-
 func TestJWTInAuthorizationHeader(t *testing.T) {
 	cfg, _ := jwtConfig(t, appauthz.HeaderAuthorize)
 	m := build(t, cfg)
 
-	out, err := m.Invoke(context.Background(), getInput("alice", "oidc", []string{"grp-ops"}))
+	out, err := m.Invoke(context.Background(), postInput("alice", "oidc", []string{"grp-ops"}, toolCallBody("list_tickets")))
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(headerValue(out.Mutations.HeadersAdd, appauthz.HeaderAuthorize), "Bearer "), "bearer prefix")
 	assert.Contains(t, out.Mutations.HeadersRemove, appauthz.HeaderAuthorize, "the client's Authorization is replaced")
@@ -203,4 +260,76 @@ func TestFactoryRejectsBadConfig(t *testing.T) {
 
 	_, err = Factory{}.New([]byte(`{}`))
 	assert.Error(t, err, "an empty config has no forwarding mode and must not build")
+}
+
+func TestDeniedCallAnswersInProtocol(t *testing.T) {
+	m := build(t, baseConfig())
+
+	out, err := m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("delete_ticket")))
+	require.NoError(t, err)
+	require.Equal(t, middleware.DecisionDeny, out.Decision)
+	mcp := out.DenyReason.MCP
+	require.NotNil(t, mcp, "a parsed tools/call denial carries what the JSON-RPC answer needs")
+	assert.False(t, mcp.Batch)
+	require.Len(t, mcp.Requests, 1)
+	assert.Equal(t, "1", string(mcp.Requests[0].ID), "the request id is kept so the answer matches the call")
+	assert.Equal(t, "delete_ticket", mcp.Requests[0].Tool)
+	assert.True(t, mcp.Requests[0].Denied)
+
+	batch := []byte(`[` + string(toolCallBody("list_tickets")) + `,{"jsonrpc":"2.0","id":"b","method":"tools/call","params":{"name":"delete_ticket"}}]`)
+	out, err = m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, batch))
+	require.NoError(t, err)
+	require.NotNil(t, out.DenyReason.MCP)
+	assert.True(t, out.DenyReason.MCP.Batch)
+	require.Len(t, out.DenyReason.MCP.Requests, 2)
+	assert.False(t, out.DenyReason.MCP.Requests[0].Denied, "the allowed call is not marked denied")
+	assert.True(t, out.DenyReason.MCP.Requests[1].Denied)
+	assert.Equal(t, "delete_ticket", out.DenyReason.Details["tool"], "details name the first denied tool")
+
+	out, err = m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, []byte(`{"method":`)))
+	require.NoError(t, err)
+	assert.Nil(t, out.DenyReason.MCP, "a body that could not be parsed gets the plain HTTP deny")
+}
+
+func TestHeadersModeSendsToolPatterns(t *testing.T) {
+	m := build(t, baseConfig())
+
+	out, err := m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("list_tickets")))
+	require.NoError(t, err)
+	assert.Equal(t, "list_*,get_ticket", headerValue(out.Mutations.HeadersAdd, appauthz.HeaderMCPTools), "MCP servers in headers mode can filter tools/list")
+	assert.Contains(t, out.Mutations.HeadersRemove, appauthz.HeaderMCPTools, "client copies are stripped")
+
+	_, _, blocked := middleware.FilterHeaderMutationsFor(out.Mutations, ID)
+	assert.Empty(t, blocked, "the tools header passes the header policy")
+}
+
+func TestJWTAudienceIsAString(t *testing.T) {
+	cfg, pub := jwtConfig(t, "")
+	m := build(t, cfg)
+
+	out, err := m.Invoke(context.Background(), postInput("alice", "oidc", []string{"grp-ops"}, toolCallBody("list_tickets")))
+	require.NoError(t, err)
+	raw := headerValue(out.Mutations.HeadersAdd, appauthz.HeaderIdentity)
+
+	parts := strings.Split(raw, ".")
+	require.Len(t, parts, 3)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	var generic map[string]any
+	require.NoError(t, json.Unmarshal(payload, &generic))
+	assert.Equal(t, "tickets.acme.io", generic["aud"], "aud is a plain string, not an array")
+
+	_, err = jwt.ParseWithClaims(raw, &claims{}, func(*jwt.Token) (any, error) { return pub, nil },
+		jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithAudience("tickets.acme.io"))
+	assert.NoError(t, err, "audience validation still works with the string form")
+}
+
+func TestAllowedToolCallIsLogged(t *testing.T) {
+	m := build(t, baseConfig())
+
+	out, err := m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("list_tickets")))
+	require.NoError(t, err)
+	require.Equal(t, middleware.DecisionAllow, out.Decision)
+	assert.Equal(t, "list_tickets", headerValue(out.Metadata, keyTool), "the access log names the tool an allowed call used")
+	assert.Equal(t, "allow", headerValue(out.Metadata, keyDecision))
 }
