@@ -76,9 +76,11 @@ func (m *Middleware) Invoke(_ context.Context, in *middleware.Input) (*middlewar
 	meta := []middleware.KV{{Key: keyRoles, Value: strings.Join(roles, ",")}}
 
 	if m.cfg.EnforceMCP {
-		if out := m.checkTools(in, tools, meta); out != nil {
+		out, toolMeta := m.checkTools(in, tools, meta)
+		if out != nil {
 			return out, nil
 		}
+		meta = append(meta, toolMeta...)
 	}
 
 	mutations, err := m.identityMutations(in, roles, tools)
@@ -93,11 +95,12 @@ func (m *Middleware) Invoke(_ context.Context, in *middleware.Input) (*middlewar
 }
 
 // checkTools returns a deny output when the request carries a tools/call the
-// caller's roles do not grant, or a body that cannot be inspected.
-func (m *Middleware) checkTools(in *middleware.Input, patterns []string, meta []middleware.KV) *middleware.Output {
+// caller's roles do not grant, or a body that cannot be inspected. For an
+// allowed request it returns the metadata naming the tool, when there is one.
+func (m *Middleware) checkTools(in *middleware.Input, patterns []string, meta []middleware.KV) (*middleware.Output, []middleware.KV) {
 	body, err := parseBody(in.Method, kvToHeader(in.Headers), in.Body, in.BodyTruncated)
 	if err != nil {
-		return deny(denyCodeUninspectable, err.Error(), "", nil, meta)
+		return deny(denyCodeUninspectable, err.Error(), "", nil, meta), nil
 	}
 	var calls []string
 	var denied bool
@@ -118,12 +121,12 @@ func (m *Middleware) checkTools(in *middleware.Input, patterns []string, meta []
 		mcp.Requests = append(mcp.Requests, req)
 	}
 	if denied {
-		return deny(denyCodeToolForbidden, "your roles do not allow this MCP tool", firstDenied, mcp, meta)
+		return deny(denyCodeToolForbidden, "your roles do not allow this MCP tool", firstDenied, mcp, meta), nil
 	}
 	if len(calls) == 1 {
-		meta = append(meta, middleware.KV{Key: keyTool, Value: calls[0]})
+		return nil, []middleware.KV{{Key: keyTool, Value: calls[0]}}
 	}
-	return nil
+	return nil, nil
 }
 
 func deny(code, message, tool string, mcp *middleware.MCPDeny, meta []middleware.KV) *middleware.Output {

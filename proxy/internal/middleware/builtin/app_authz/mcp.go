@@ -11,10 +11,22 @@ import (
 
 const methodToolsCall = "tools/call"
 
-// reservedKeys are the JSON-RPC keys the tool check reads. A case variant of
-// one would be ignored here but may be honoured by a case-insensitive
-// upstream decoder, so it is rejected.
-var reservedKeys = map[string]struct{}{"jsonrpc": {}, "id": {}, "method": {}, "params": {}, "name": {}}
+// reservedKeys are the JSON-RPC keys the tool check reads. A key that only
+// folds to one of them would be ignored here but honoured by an upstream that
+// matches keys case-insensitively, as encoding/json does, so it is refused.
+var reservedKeys = []string{"jsonrpc", "id", "method", "params", "name"}
+
+// reservedKey returns the reserved key that key folds to, if any. Folding uses
+// strings.EqualFold, Unicode simple case folding, which is at least as broad
+// as encoding/json's: it maps U+017F (long s) to "s" and U+212A (Kelvin) to "k".
+func reservedKey(key string) (string, bool) {
+	for _, r := range reservedKeys {
+		if strings.EqualFold(key, r) {
+			return r, true
+		}
+	}
+	return "", false
+}
 
 var (
 	errBodyNotInspected = errors.New("request body could not be inspected")
@@ -108,11 +120,12 @@ func parseMessage(raw json.RawMessage) (rpcCall, error) {
 	return call, nil
 }
 
-// strictObject decodes a JSON object into its fields with exact-case keys.
+// strictObject decodes a JSON object into its fields with exact keys.
 // encoding/json matches struct fields case-insensitively and keeps the last
 // duplicate, while upstream servers in other languages may keep the first or
-// match exactly. Rejecting duplicate keys, including keys that differ only in
-// case, removes any reading of the message that differs from the upstream's.
+// match exactly. Refusing duplicates of the reserved keys, and any key that
+// only folds to one, removes every reading of the message that differs from
+// the upstream's. Other keys do not affect the tool check.
 func strictObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	tok, err := dec.Token()
@@ -130,14 +143,15 @@ func strictObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
 		if !ok {
 			return nil, errBodyNotJSONRPC
 		}
-		folded := strings.ToLower(key)
-		if _, dup := seen[folded]; dup {
-			return nil, fmt.Errorf("%w: duplicate key %q", errBodyNotJSONRPC, key)
+		if r, reserved := reservedKey(key); reserved {
+			if key != r {
+				return nil, fmt.Errorf("%w: key %q folds to %q", errBodyNotJSONRPC, key, r)
+			}
+			if _, dup := seen[r]; dup {
+				return nil, fmt.Errorf("%w: duplicate key %q", errBodyNotJSONRPC, key)
+			}
+			seen[r] = struct{}{}
 		}
-		if _, reserved := reservedKeys[folded]; reserved && key != folded {
-			return nil, fmt.Errorf("%w: key %q differs from %q only in case", errBodyNotJSONRPC, key, folded)
-		}
-		seen[folded] = struct{}{}
 		var value json.RawMessage
 		if err := dec.Decode(&value); err != nil {
 			return nil, errBodyNotJSONRPC

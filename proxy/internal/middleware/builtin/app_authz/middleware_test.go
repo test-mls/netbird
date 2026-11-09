@@ -323,3 +323,13 @@ func TestJWTAudienceIsAString(t *testing.T) {
 		jwt.WithValidMethods([]string{"EdDSA"}), jwt.WithAudience("tickets.acme.io"))
 	assert.NoError(t, err, "audience validation still works with the string form")
 }
+
+func TestAllowedToolCallIsLogged(t *testing.T) {
+	m := build(t, baseConfig())
+
+	out, err := m.Invoke(context.Background(), postInput("bob", "oidc", []string{"grp-eng"}, toolCallBody("list_tickets")))
+	require.NoError(t, err)
+	require.Equal(t, middleware.DecisionAllow, out.Decision)
+	assert.Equal(t, "list_tickets", headerValue(out.Metadata, keyTool), "the access log names the tool an allowed call used")
+	assert.Equal(t, "allow", headerValue(out.Metadata, keyDecision))
+}
