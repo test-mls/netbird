@@ -4,6 +4,19 @@ import "strings"
 
 const trustedIdentityMiddlewareID = "llm_identity_inject"
 
+// appAuthzMiddlewareID may write the identity it resolved after
+// authentication, including a signed token in Authorization. It must stay in
+// step with appauthz.MiddlewareID.
+const appAuthzMiddlewareID = "app_authz"
+
+var appAuthzHeaders = []string{
+	"X-NetBird-User-Id",
+	"X-NetBird-Roles",
+	"X-NetBird-Auth-Method",
+	"X-NetBird-Identity",
+	"Authorization",
+}
+
 var denyHeaders = []string{
 	"Authorization",
 	"Connection",
@@ -83,6 +96,12 @@ func FilterHeaderMutations(m *Mutations) (filteredAdd []KV, filteredRemove []str
 	return filterHeaderMutations(m, "")
 }
 
+// FilterHeaderMutationsFor is FilterHeaderMutations with the per-middleware
+// identity exemptions applied, as the chain does for middlewareID.
+func FilterHeaderMutationsFor(m *Mutations, middlewareID string) (filteredAdd []KV, filteredRemove []string, blocked []string) {
+	return filterHeaderMutations(m, middlewareID)
+}
+
 func filterHeaderMutations(m *Mutations, middlewareID string) (filteredAdd []KV, filteredRemove []string, blocked []string) {
 	if m == nil {
 		return nil, nil, nil
@@ -105,9 +124,16 @@ func filterHeaderMutations(m *Mutations, middlewareID string) (filteredAdd []KV,
 }
 
 func isTrustedIdentityHeader(middlewareID, name string) bool {
-	if middlewareID != trustedIdentityMiddlewareID {
-		return false
+	switch middlewareID {
+	case trustedIdentityMiddlewareID:
+		return strings.EqualFold(name, "x-netbird-user-id") ||
+			strings.EqualFold(name, "x-netbird-groups")
+	case appAuthzMiddlewareID:
+		for _, h := range appAuthzHeaders {
+			if strings.EqualFold(name, h) {
+				return true
+			}
+		}
 	}
-	return strings.EqualFold(name, "x-netbird-user-id") ||
-		strings.EqualFold(name, "x-netbird-groups")
+	return false
 }
